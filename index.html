@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0E7C6B" />
+<title>SR Shoes — Catalog</title>
+<link rel="manifest" href='data:application/manifest+json,{"name":"SR Shoes Catalog","short_name":"SR Catalog","start_url":".","display":"standalone","background_color":"%23FAF9F6","theme_color":"%230E7C6B","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 192 192%27%3E%3Crect width=%27192%27 height=%27192%27 rx=%2740%27 fill=%27%230E7C6B%27/%3E%3Ctext x=%2796%27 y=%27124%27 font-size=%2790%27 font-family=%27sans-serif%27 font-weight=%27800%27 fill=%27white%27 text-anchor=%27middle%27%3ESR%3C/text%3E%3C/svg%3E","sizes":"192x192","type":"image/svg+xml"}]}' />
+
+<!-- ============================================================
+     CONFIG — edit these three blocks, then deploy.
+     ============================================================ -->
+<script>
+const CONFIG = {
+  // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
+  firebase: {
+    apiKey: "PASTE_API_KEY",
+    authDomain: "PASTE_PROJECT.firebaseapp.com",
+    projectId: "PASTE_PROJECT_ID",
+    storageBucket: "PASTE_PROJECT.firebasestorage.app",
+    messagingSenderId: "PASTE_SENDER_ID",
+    appId: "PASTE_APP_ID"
+  },
+
+  // 2) Admin gate. Client side is open; this only unlocks import / mapping / images.
+  //    NOTE: a client-side PIN does NOT secure the database — see the security note
+  //    in the handover message. Fine for launch; upgrade to Firebase Auth later.
+  adminPin: "1234",
+
+  // 3) Storefront options.
+  storeName: "SR Shoes",
+  currency: "₹",
+  whatsapp: { enabled: true, number: "918275407603" }, // set enabled:false for a pure view-only catalog
+  collection: "catalog_products"
+};
+</script>
+
+<style>
+:root{
+  --bg:#FAF9F6; --surface:#FFFFFF; --ink:#1A1714; --muted:#6B6560; --faint:#9A938B;
+  --line:#E9E4DC; --line-strong:#DAD3C8; --accent:#0E7C6B; --accent-deep:#0B5E52;
+  --accent-soft:#E4F1EE; --warn:#B4632A; --warn-soft:#F6EADF; --danger:#B23A48;
+  --danger-soft:#F6E4E6; --ok:#2F7D57; --shadow:0 1px 2px rgba(26,23,20,.04),0 6px 20px rgba(26,23,20,.06);
+  --radius:14px; --radius-sm:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased; line-height:1.45;
+}
+button{font-family:inherit; cursor:pointer}
+input,select,textarea{font-family:inherit; font-size:15px}
+.hidden{display:none !important}
+img{max-width:100%}
+
+/* ---------- Top bar ---------- */
+.topbar{
+  position:sticky; top:0; z-index:40; background:rgba(250,249,246,.92);
+  backdrop-filter:saturate(1.2) blur(8px); border-bottom:1px solid var(--line);
+}
+.topbar-inner{max-width:1180px; margin:0 auto; padding:12px 18px; display:flex; align-items:center; gap:14px}
+.brand{display:flex; align-items:center; gap:10px; font-weight:800; letter-spacing:-.02em; font-size:18px}
+.brand .mark{width:30px;height:30px;border-radius:9px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:800}
+.brand small{font-weight:600;color:var(--muted);font-size:12px;letter-spacing:0}
+.spacer{flex:1}
+.linkbtn{background:none;border:none;color:var(--muted);font-weight:600;font-size:13px;padding:8px 10px;border-radius:8px}
+.linkbtn:hover{background:var(--surface);color:var(--ink)}
+
+/* ---------- Buttons ---------- */
+.btn{border:1px solid var(--line-strong); background:var(--surface); color:var(--ink);
+  padding:9px 15px; border-radius:10px; font-weight:600; font-size:14px; display:inline-flex;
+  align-items:center; gap:8px; transition:.12s}
+.btn:hover{border-color:var(--faint)}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep)}
+.btn.ghost{border-color:transparent; background:transparent; color:var(--muted)}
+.btn.ghost:hover{background:var(--surface); color:var(--ink)}
+.btn.sm{padding:6px 11px; font-size:13px; border-radius:8px}
+.btn.danger{color:var(--danger); border-color:var(--danger-soft)}
+.btn:disabled{opacity:.5; cursor:not-allowed}
+
+/* ---------- Layout ---------- */
+.wrap{max-width:1180px; margin:0 auto; padding:20px 18px 90px}
+.eyebrow{font-size:11px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:var(--faint)}
+h1.page{font-size:26px; letter-spacing:-.02em; margin:4px 0 2px}
+.sub{color:var(--muted); font-size:14px; margin:0 0 18px}
+
+/* ---------- Client controls ---------- */
+.controls{display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px}
+.search{flex:1; min-width:220px; position:relative}
+.search input{width:100%; padding:11px 14px 11px 38px; border:1px solid var(--line-strong);
+  border-radius:11px; background:var(--surface); outline:none}
+.search input:focus{border-color:var(--accent)}
+.search svg{position:absolute; left:12px; top:50%; transform:translateY(-50%); color:var(--faint)}
+select.control{padding:10px 12px; border:1px solid var(--line-strong); border-radius:11px; background:var(--surface); outline:none; color:var(--ink)}
+select.control:focus{border-color:var(--accent)}
+.filterbar{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; align-items:center}
+.chip{border:1px solid var(--line-strong); background:var(--surface); color:var(--muted);
+  padding:6px 12px; border-radius:999px; font-size:13px; font-weight:600}
+.chip.on{background:var(--accent); border-color:var(--accent); color:#fff}
+.chip.size{min-width:40px; text-align:center}
+.count{color:var(--faint); font-size:13px; font-weight:600; margin-left:auto}
+.fcount{background:var(--accent); color:#fff; font-size:11px; font-weight:800; min-width:18px; height:18px; border-radius:9px; display:inline-grid; place-items:center; padding:0 5px}
+#filterBtn.active{border-color:var(--accent); color:var(--accent-deep)}
+.af-chip{border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent-deep); padding:5px 10px; border-radius:999px; font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:6px}
+.af-chip button{border:none; background:none; color:var(--accent-deep); font-size:15px; line-height:1; cursor:pointer; padding:0}
+.af-clear{color:var(--muted); font-size:13px; font-weight:600; background:none; border:none; text-decoration:underline; cursor:pointer}
+.fgroup{margin-bottom:20px}
+.fgroup h4{font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin:0 0 9px}
+.fgroup .chips{display:flex; flex-wrap:wrap; gap:7px; max-height:168px; overflow:auto}
+.price-row{display:flex; gap:10px; align-items:center}
+.price-row input{width:100%; padding:9px 11px; border:1px solid var(--line-strong); border-radius:9px; outline:none}
+.price-row input:focus{border-color:var(--accent)}
+.preview-banner{background:var(--warn-soft); border:1px solid #E9D4BF; color:var(--warn); border-radius:11px; padding:10px 14px; font-size:13px; font-weight:600; margin-bottom:16px; display:flex; gap:8px; align-items:center}
+
+/* ---------- Product grid ---------- */
+.grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:14px}
+.card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  overflow:hidden; box-shadow:var(--shadow); transition:.14s; cursor:pointer}
+.card:hover{transform:translateY(-2px); border-color:var(--line-strong)}
+.thumb{aspect-ratio:1/1; background:var(--bg); display:grid; place-items:center; position:relative; overflow:hidden}
+.thumb img{width:100%; height:100%; object-fit:cover}
+.ph{display:grid; place-items:center; gap:8px; color:var(--faint); text-align:center; padding:12px}
+.ph svg{opacity:.55}
+.ph span{font-size:11px; font-weight:600; letter-spacing:.02em}
+.card-body{padding:12px 13px 14px}
+.card-brand{font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--accent)}
+.card-name{font-weight:600; font-size:14px; margin:3px 0 8px; line-height:1.3; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; min-height:36px}
+.card-price{font-weight:800; letter-spacing:-.01em}
+.card-price small{font-weight:600; color:var(--muted); font-size:12px}
+.sizes{display:flex; flex-wrap:wrap; gap:4px; margin-top:9px}
+.sz{font-size:11px; font-weight:600; color:var(--muted); border:1px solid var(--line); border-radius:6px; padding:2px 6px}
+.badge-map{position:absolute; top:8px; left:8px; background:rgba(26,23,20,.72); color:#fff; font-size:10px; font-weight:700; padding:3px 7px; border-radius:6px; letter-spacing:.03em}
+
+/* ---------- Empty / loading ---------- */
+.state{text-align:center; padding:70px 20px; color:var(--muted)}
+.state h3{color:var(--ink); margin:0 0 6px}
+.spinner{width:26px;height:26px;border:3px solid var(--line-strong);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 14px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- Modal / drawer ---------- */
+.overlay{position:fixed; inset:0; background:rgba(26,23,20,.42); backdrop-filter:blur(2px); z-index:60; display:flex; opacity:0; pointer-events:none; transition:.18s}
+.overlay.show{opacity:1; pointer-events:auto}
+.sheet{background:var(--surface); margin:auto; width:min(640px,94vw); max-height:92vh; overflow:auto; border-radius:18px; box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.drawer{margin:0 0 0 auto; width:min(560px,100vw); height:100vh; max-height:100vh; border-radius:0}
+.sheet-head{position:sticky; top:0; background:var(--surface); border-bottom:1px solid var(--line); padding:16px 20px; display:flex; align-items:center; gap:12px; z-index:2}
+.sheet-head h2{font-size:17px; margin:0; letter-spacing:-.01em}
+.sheet-body{padding:20px}
+.x{margin-left:auto; border:none; background:var(--bg); width:32px; height:32px; border-radius:9px; color:var(--muted); font-size:18px; line-height:1}
+
+/* detail */
+.detail-img{aspect-ratio:1/1; max-height:340px; width:100%; background:var(--bg); border-radius:12px; overflow:hidden; display:grid; place-items:center; margin-bottom:16px}
+.detail-img img{width:100%;height:100%;object-fit:contain}
+.kv{display:flex; gap:8px; font-size:14px; padding:7px 0; border-bottom:1px solid var(--line)}
+.kv b{min-width:96px; color:var(--muted); font-weight:600}
+.size-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:8px; margin:12px 0}
+.size-cell{border:1px solid var(--line-strong); border-radius:9px; padding:8px 4px; text-align:center}
+.size-cell .n{font-weight:800; font-size:15px}
+.size-cell .s{font-size:11px; color:var(--muted); font-weight:600}
+.size-cell.low .s{color:var(--warn)}
+
+/* ---------- Admin ---------- */
+.tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); padding:4px; border-radius:12px; margin-bottom:20px; width:fit-content; flex-wrap:wrap}
+.tab{border:none; background:none; padding:8px 15px; border-radius:9px; font-weight:600; font-size:14px; color:var(--muted)}
+.tab.on{background:var(--accent); color:#fff}
+.panel{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow)}
+.drop{border:2px dashed var(--line-strong); border-radius:14px; padding:34px 20px; text-align:center; color:var(--muted); transition:.15s; background:var(--bg)}
+.drop.hot{border-color:var(--accent); background:var(--accent-soft); color:var(--accent-deep)}
+.stat-row{display:flex; flex-wrap:wrap; gap:12px; margin:18px 0}
+.stat{flex:1; min-width:120px; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:14px 16px}
+.stat .num{font-size:26px; font-weight:800; letter-spacing:-.02em}
+.stat .lbl{font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.05em}
+.stat.new .num{color:var(--accent)} .stat.upd .num{color:var(--ink)} .stat.oos .num{color:var(--warn)} .stat.iss .num{color:var(--danger)}
+.progress{height:8px; background:var(--line); border-radius:6px; overflow:hidden; margin:8px 0}
+.progress > i{display:block; height:100%; background:var(--accent); width:0; transition:.2s}
+
+.mrow{display:flex; align-items:center; gap:12px; padding:11px 12px; border:1px solid var(--line); border-radius:11px; margin-bottom:8px; background:var(--surface)}
+.mrow:hover{border-color:var(--line-strong)}
+.mrow .mthumb{width:46px;height:46px;border-radius:9px;background:var(--bg);flex-shrink:0;display:grid;place-items:center;overflow:hidden;color:var(--faint)}
+.mrow .mthumb img{width:100%;height:100%;object-fit:cover}
+.mrow .minfo{flex:1; min-width:0}
+.mrow .mname{font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.mrow .mmeta{font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.tag{font-size:10px; font-weight:700; padding:2px 7px; border-radius:5px; letter-spacing:.03em}
+.tag.mapped{background:var(--accent-soft); color:var(--accent-deep)}
+.tag.raw{background:var(--warn-soft); color:var(--warn)}
+.tag.noimg{background:var(--bg); color:var(--faint)}
+
+.field{margin-bottom:14px}
+.field label{display:block; font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:5px}
+.field input,.field select,.field textarea{width:100%; padding:10px 12px; border:1px solid var(--line-strong); border-radius:10px; background:var(--surface); outline:none}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--accent)}
+.field .hint{font-size:12px; color:var(--faint); margin-top:4px}
+.raw-box{background:var(--bg); border:1px solid var(--line); border-radius:11px; padding:13px 15px; margin-bottom:18px; font-size:13px}
+.raw-box .rline{display:flex; gap:8px; padding:3px 0}
+.raw-box b{color:var(--muted); font-weight:600; min-width:80px}
+.two{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+
+.issue{display:flex; gap:12px; align-items:flex-start; padding:12px 14px; border:1px solid var(--danger-soft); background:#fff; border-radius:11px; margin-bottom:8px}
+.issue .idot{width:8px;height:8px;border-radius:50%;background:var(--danger);margin-top:6px;flex-shrink:0}
+.issue .icode{font-family:ui-monospace,monospace; font-size:12px; background:var(--bg); padding:1px 6px; border-radius:5px}
+.issue .iwhat{font-size:13px; color:var(--ink)} .issue .iraw{font-size:12px; color:var(--muted)}
+
+.toast{position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--ink); color:#fff; padding:12px 20px; border-radius:11px; font-size:14px; font-weight:600; z-index:90; opacity:0; transition:.22s; box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--danger)}
+
+.pin-wrap{max-width:340px; margin:80px auto; text-align:center}
+.pin-wrap input{width:100%; text-align:center; letter-spacing:.5em; font-size:22px; font-weight:700; padding:14px; border:1px solid var(--line-strong); border-radius:12px; margin:16px 0}
+
+@media (max-width:640px){
+  .wrap{padding:16px 14px 90px}
+  .grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px}
+  h1.page{font-size:22px}
+  .two{grid-template-columns:1fr}
+  .drawer{width:100vw}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none !important; animation:none !important}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand"><span class="mark">SR</span><div>SR Shoes<br><small>Catalog</small></div></div>
+    <div class="spacer"></div>
+    <button class="linkbtn" id="navClient">Catalog</button>
+    <button class="linkbtn" id="navAdmin">Admin</button>
+  </div>
+</div>
+
+<!-- ==================== CLIENT ==================== -->
+<div class="wrap" id="clientView">
+  <div class="eyebrow">In-stock now</div>
+  <h1 class="page">Browse the collection</h1>
+  <p class="sub" id="clientSub">Loading catalog…</p>
+
+  <div class="controls">
+    <div class="search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="q" placeholder="Search name, brand, colour or code…" />
+    </div>
+    <select class="control" id="sortBy">
+      <option value="name">Name A–Z</option>
+      <option value="price_asc">Price: low to high</option>
+      <option value="price_desc">Price: high to low</option>
+      <option value="new">Recently added</option>
+    </select>
+    <button class="btn" id="filterBtn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18M6 12h12M10 19h4"/></svg>
+      Filters <span id="filterCount" class="fcount hidden">0</span>
+    </button>
+  </div>
+
+  <div class="filterbar" id="activeFilters"></div>
+
+  <div id="clientResults"><div class="state"><div class="spinner"></div>Loading products…</div></div>
+</div>
+
+<!-- ==================== ADMIN ==================== -->
+<div class="wrap hidden" id="adminView">
+  <!-- PIN gate -->
+  <div id="pinGate">
+    <div class="pin-wrap">
+      <div class="eyebrow">Staff only</div>
+      <h1 class="page">Admin access</h1>
+      <p class="sub">Enter the admin PIN to import stock, map products and add photos.</p>
+      <input id="pinInput" type="password" inputmode="numeric" maxlength="8" placeholder="••••" />
+      <button class="btn primary" id="pinBtn" style="width:100%">Unlock</button>
+    </div>
+  </div>
+
+  <!-- Admin content -->
+  <div id="adminContent" class="hidden">
+    <div class="eyebrow">Admin</div>
+    <h1 class="page">Catalog control</h1>
+    <p class="sub" id="adminSub">—</p>
+
+    <div class="tabs">
+      <button class="tab on" data-tab="import">Import stock</button>
+      <button class="tab" data-tab="map">Products <span id="mapCount"></span></button>
+      <button class="tab" data-tab="images">Photos</button>
+      <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
+    </div>
+
+    <!-- IMPORT -->
+    <div class="panel tabpane" id="pane-import">
+      <h2 style="margin:0 0 4px; font-size:18px">Daily stock import</h2>
+      <p class="sub" style="margin:0 0 16px">Upload the stock export from your billing software. Nothing is written until you review the summary.</p>
+      <div class="drop" id="drop">
+        <input type="file" id="file" accept=".xlsx,.xls" class="hidden" />
+        <div style="font-size:15px; font-weight:600">Drop the stock .xlsx here, or <button class="btn sm" id="pickFile" style="vertical-align:middle">choose file</button></div>
+        <div style="font-size:12px; margin-top:6px">One row per size — grouped automatically by product code.</div>
+      </div>
+      <div id="importPreview" class="hidden" style="margin-top:20px"></div>
+    </div>
+
+    <!-- MAP -->
+    <div class="panel tabpane hidden" id="pane-map">
+      <div class="controls" style="margin-bottom:14px">
+        <div class="search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input id="mq" placeholder="Search products to map…" />
+        </div>
+        <select class="control" id="mFilterStatus">
+          <option value="unmapped">Unmapped first</option>
+          <option value="mapped">Mapped only</option>
+          <option value="all">All</option>
+          <option value="noimg">Missing photo</option>
+        </select>
+        <select class="control" id="mSort">
+          <option value="stock">Most stock first</option>
+          <option value="name">Name A–Z</option>
+        </select>
+      </div>
+      <div id="bulkBar" class="hidden" style="display:flex;gap:8px;align-items:center;background:var(--accent-soft);border:1px solid var(--accent);border-radius:11px;padding:10px 14px;margin-bottom:12px">
+        <b id="bulkN" style="font-size:14px"></b>
+        <span style="color:var(--muted);font-size:13px">selected</span>
+        <div class="spacer" style="flex:1"></div>
+        <button class="btn sm" id="bulkEdit">Set brand / gender / category</button>
+        <button class="btn sm ghost" id="bulkClear">Clear</button>
+      </div>
+      <div id="mapList"></div>
+      <div id="mapMore" style="text-align:center;margin-top:14px"></div>
+    </div>
+
+    <!-- IMAGES -->
+    <div class="panel tabpane hidden" id="pane-images">
+      <h2 style="margin:0 0 4px; font-size:18px">Batch photo upload</h2>
+      <p class="sub" style="margin:0 0 16px">Name each image by its product code — e.g. <b>N6977.jpg</b> — then drop them all here. Matched photos link automatically. Photos survive every daily import.</p>
+      <div class="drop" id="imgDrop">
+        <input type="file" id="imgFiles" accept="image/*" multiple class="hidden" />
+        <div style="font-size:15px; font-weight:600">Drop photos here, or <button class="btn sm" id="pickImgs" style="vertical-align:middle">choose files</button></div>
+        <div style="font-size:12px; margin-top:6px">Filenames must match product codes. Images are compressed before upload.</div>
+      </div>
+      <div id="imgReport" style="margin-top:18px"></div>
+    </div>
+
+    <!-- ISSUES -->
+    <div class="panel tabpane hidden" id="pane-issues">
+      <h2 style="margin:0 0 4px; font-size:18px">Data issues to fix at the billing software</h2>
+      <p class="sub" style="margin:0 0 16px">Products where the stock file is missing a price, a size, or a name. Fix these in your billing software, then re-import.</p>
+      <div id="issueList"><div class="state">Run an import to check for issues.</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+<script>
+/* ============================================================
+   SR Shoes Catalog — single-file PWA
+   Data model: one doc per base code in CONFIG.collection
+     file-owned : rawName, group, subGroup, sizes[], totalStock,
+                  inStock, priceMin, priceMax, autoBrand/Gender/Category,
+                  issues[], lastSeen
+     brain-owned: displayName, brand, gender, category, color, notes,
+                  imageUrl, mapped
+   Import writes file-owned with merge:true (brain untouched).
+   Mapping writes brain-owned with merge:true (file data untouched).
+   ============================================================ */
+
+let db=null, storage=null, fbReady=false;
+try{
+  firebase.initializeApp(CONFIG.firebase);
+  db=firebase.firestore(); storage=firebase.storage(); fbReady=true;
+}catch(e){ console.error("Firebase init failed", e); }
+
+const COL = CONFIG.collection;
+const $ = s=>document.querySelector(s);
+const $$ = s=>[...document.querySelectorAll(s)];
+const money = n => CONFIG.currency + Number(n||0).toLocaleString('en-IN');
+const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function toast(msg, err){ const t=$('#toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
+
+/* ---------- Parsing helpers (mirror validated logic) ---------- */
+const baseCode = code => String(code).trim().replace(/X[\d.]+$/i,'');
+function parseSize(desc){
+  const d = String(desc??'').trim();
+  const m = d.match(/(\d+(?:\.\d+)?)(\s*K)?\s*$/i);        // trailing number, optional K (kids)
+  if(m){
+    const label = (m[1] + (m[2]?m[2].trim().toUpperCase():'')).trim();
+    const color = d.slice(0, m.index).trim().replace(/[\/,-]+$/,'').trim();
+    return { label, num: parseFloat(m[1]), color };
+  }
+  return { label: d || '—', num: null, color: '' };       // non-numeric → keep raw, flag later
+}
+function toNum(v){ const n=parseFloat(v); return isNaN(n)?0:n; }
+function stripSizeFromName(name){ return String(name??'').trim().replace(/\s+\d+(?:\.\d+)?\s*K?$/i,'').trim(); }
+
+const BRANDS = ['Aerowalk','SPARX','Flite','NEXO','WALKAROO','QT FOAM','LANCER','CAMPUS','TROOS','SPYN','GLIDE GEAR','JQR','KOVES','PURE','FIESTA','Asian','RELAXO','MOSACH','BIDEN'];
+function autoBrand(group,name){
+  const g=String(group||'').trim();
+  if(BRANDS.some(b=>b.toLowerCase()===g.toLowerCase())) return g;
+  const p=String(name||'').match(/\(([^)]+)\)/); if(p) return p[1].trim();
+  return '';
+}
+function autoGender(group,sub){
+  const s=(group+' '+sub).toLowerCase();
+  if(/\bgirls?\b|^gr/.test(s)) return 'Girls';
+  if(/\bboys?\b|^b_/.test(s)) return 'Boys';
+  if(/\bkids?\b|school|^kd|^k_/.test(s)) return 'Kids';
+  if(/wom[ae]n|ladies|^l_/.test(s)) return 'Women';
+  if(/\bmens?\b|gents|^g_/.test(s)) return 'Men';
+  return '';
+}
+function autoCategory(group){
+  const g=String(group||'').toLowerCase();
+  const map=[['chappal','Chappals'],['sport','Sports Shoes'],['sandal','Sandals'],['sandle','Sandals'],['formal','Formal'],['slider','Sliders'],['slid','Sliders'],['crock','Crocs'],['crock','Crocs'],['loafer','Loafers'],['belly','Belly'],['sneaker','Sneakers'],['sock','Socks'],['school','School Shoes'],['clog','Clogs'],['fancy','Fancy'],['moccas','Moccasins'],['belt','Belts'],['wallet','Wallets']];
+  for(const [k,v] of map) if(g.includes(k)) return v;
+  return '';
+}
+
+/* ---------- Read the xlsx into products keyed by base code ---------- */
+function parseWorkbook(wb){
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
+  // find header row containing "Code"
+  let h=-1;
+  for(let i=0;i<Math.min(rows.length,15);i++){ if(rows[i].some(c=>String(c).trim()==='Code')){ h=i; break; } }
+  if(h<0) throw new Error('Could not find the header row (expected a "Code" column).');
+  const head = rows[h].map(c=>String(c).trim());
+  const col = name => head.indexOf(name);
+  const cCode=col('Code'), cGroup=col('Group'), cSub=col('Sub-Group'), cName=col('Name'),
+        cDesc=col('Desc'), cStock=col('Stock'), cRate=col('Rate');
+  if(cCode<0) throw new Error('No "Code" column found.');
+
+  const map = new Map();
+  for(let i=h+1;i<rows.length;i++){
+    const r=rows[i]; const code=String(r[cCode]??'').trim();
+    if(!code) continue;
+    const base=baseCode(code);
+    const stock=Math.round(toNum(r[cStock]));
+    const rate=toNum(r[cRate]);
+    const sz=parseSize(r[cDesc]);
+    const name=String(r[cName]??'').trim();
+    if(!map.has(base)){
+      map.set(base,{ base, rawName:stripSizeFromName(name)||name, group:String(r[cGroup]??'').trim(),
+        subGroup:String(r[cSub]??'').trim(), sizes:[], _colorHints:new Set() });
+    }
+    const p=map.get(base);
+    p.sizes.push({ code, label:sz.label, num:sz.num, stock, rate, color:sz.color });
+    if(sz.color) p._colorHints.add(sz.color);
+  }
+
+  const products=[];
+  for(const p of map.values()){
+    const inStockSizes=p.sizes.filter(s=>s.stock>0);
+    const totalStock=p.sizes.reduce((a,s)=>a+s.stock,0);
+    const rates=inStockSizes.map(s=>s.rate).filter(r=>r>0);
+    const priceMin=rates.length?Math.min(...rates):0, priceMax=rates.length?Math.max(...rates):0;
+    // data issues (only meaningful when there's stock to sell)
+    const issues=[];
+    if(inStockSizes.length){
+      if(inStockSizes.some(s=>s.rate<=0)) issues.push('Missing price on '+inStockSizes.filter(s=>s.rate<=0).map(s=>s.label).join(', '));
+      const bad=inStockSizes.filter(s=>s.num===null);
+      if(bad.length) issues.push('Unclear size: '+bad.map(s=>'"'+s.label+'"').join(', '));
+      if(!p.rawName) issues.push('Missing product name');
+    }
+    // clean sizes for storage (dedupe by label, sum stock)
+    const byLabel=new Map();
+    for(const s of p.sizes){
+      const k=s.label;
+      if(!byLabel.has(k)) byLabel.set(k,{label:s.label,num:s.num,stock:0});
+      byLabel.get(k).stock+=s.stock;
+    }
+    const sizes=[...byLabel.values()].sort((a,b)=>(a.num??999)-(b.num??999)||String(a.label).localeCompare(b.label));
+    products.push({
+      base:p.base, rawName:p.rawName, group:p.group, subGroup:p.subGroup,
+      sizes, totalStock, inStock: totalStock>0, priceMin, priceMax,
+      autoBrand:autoBrand(p.group,p.rawName), autoGender:autoGender(p.group,p.subGroup),
+      autoCategory:autoCategory(p.group), colorHint:[...p._colorHints][0]||'', issues
+    });
+  }
+  return products;
+}
+
+/* =====================================================================
+   IMPORT — parse, diff against DB, preview, then batched write
+   ===================================================================== */
+let pendingImport=null;
+function bindImport(){
+  const drop=$('#drop'), file=$('#file');
+  $('#pickFile').onclick=()=>file.click();
+  drop.onclick=e=>{ if(e.target.id==='drop'||e.target.parentElement.id==='drop') file.click(); };
+  ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hot');}));
+  drop.addEventListener('drop',e=>{ const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+  file.onchange=e=>{ const f=e.target.files[0]; if(f) handleFile(f); };
+}
+async function handleFile(f){
+  const prev=$('#importPreview'); prev.classList.remove('hidden');
+  prev.innerHTML='<div class="state"><div class="spinner"></div>Reading '+esc(f.name)+'…</div>';
+  try{
+    const buf=await f.arrayBuffer();
+    const wb=XLSX.read(buf,{type:'array'});
+    const parsed=parseWorkbook(wb);
+    prev.innerHTML='<div class="state"><div class="spinner"></div>Comparing against your catalog…</div>';
+    // fetch existing base codes + inStock
+    const snap=await db.collection(COL).get();
+    const existing=new Map(); snap.forEach(d=>existing.set(d.id,d.data()));
+    const parsedBases=new Set(parsed.map(p=>p.base));
+    let nNew=0,nUpd=0;
+    parsed.forEach(p=> existing.has(p.base)?nUpd++:nNew++);
+    const goingOOS=[...existing.entries()].filter(([id,d])=>d.inStock && !parsedBases.has(id)).map(([id])=>id);
+    const issues=parsed.filter(p=>p.issues && p.issues.length);
+    pendingImport={ parsed, goingOOS, issues, fileName:f.name };
+    renderImportPreview(nNew,nUpd,goingOOS.length,issues.length);
+  }catch(err){
+    console.error(err);
+    prev.innerHTML='<div class="issue"><span class="idot"></span><div><div class="iwhat">Could not read this file.</div><div class="iraw">'+esc(err.message)+'</div></div></div>';
+  }
+}
+function renderImportPreview(nNew,nUpd,nOOS,nIss){
+  $('#importPreview').innerHTML=`
+    <div class="stat-row">
+      <div class="stat new"><div class="num">${nNew}</div><div class="lbl">New products</div></div>
+      <div class="stat upd"><div class="num">${nUpd}</div><div class="lbl">Updated</div></div>
+      <div class="stat oos"><div class="num">${nOOS}</div><div class="lbl">Going out of stock</div></div>
+      <div class="stat iss"><div class="num">${nIss}</div><div class="lbl">Data issues</div></div>
+    </div>
+    <p class="sub" style="margin:6px 0 14px">New products land in the mapping queue. Updates change stock &amp; price only — names, photos and mapping are never touched. Out-of-stock products are hidden from customers but kept.</p>
+    <div style="display:flex;gap:10px"><button class="btn primary" id="applyImport">Apply import</button><button class="btn ghost" id="cancelImport">Cancel</button></div>
+    <div id="applyProgress" class="hidden" style="margin-top:16px"><div class="progress"><i id="pbar"></i></div><div id="ptext" class="sub" style="margin:6px 0 0"></div></div>`;
+  $('#cancelImport').onclick=()=>{ pendingImport=null; $('#importPreview').classList.add('hidden'); };
+  $('#applyImport').onclick=applyImport;
+}
+async function applyImport(){
+  if(!pendingImport) return;
+  const {parsed,goingOOS}=pendingImport;
+  $('#applyImport').disabled=true; $('#cancelImport').disabled=true;
+  $('#applyProgress').classList.remove('hidden');
+  const ops=[]; // {ref, data}
+  parsed.forEach(p=>{
+    const {base,...rest}=p; const {colorHint,...fileFields}=rest;
+    ops.push({ref:db.collection(COL).doc(base), data:{ ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp() }});
+  });
+  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSeen:firebase.firestore.FieldValue.serverTimestamp() }}));
+  const CH=450; let done=0;
+  for(let i=0;i<ops.length;i+=CH){
+    const batch=db.batch();
+    ops.slice(i,i+CH).forEach(o=>batch.set(o.ref,o.data,{merge:true}));
+    await batch.commit();
+    done=Math.min(i+CH,ops.length);
+    $('#pbar').style.width=Math.round(done/ops.length*100)+'%';
+    $('#ptext').textContent=`Writing ${done} / ${ops.length}…`;
+  }
+  $('#ptext').textContent=`Done — ${ops.length} products updated.`;
+  toast('Import applied');
+  pendingImport=null;
+  cachedProducts=null; // invalidate client cache
+  await loadAdminData();
+  renderIssuesFromDB();
+}
+
+/* =====================================================================
+   ADMIN DATA + MAPPING
+   ===================================================================== */
+let adminProducts=[];
+async function loadAdminData(){
+  const snap=await db.collection(COL).get();
+  adminProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
+  const mapped=adminProducts.filter(p=>p.mapped).length;
+  const noimg=adminProducts.filter(p=>p.inStock && !p.imageUrl).length;
+  $('#adminSub').textContent=`${adminProducts.length} products · ${mapped} mapped · ${adminProducts.filter(p=>p.inStock).length} in stock · ${noimg} in-stock without a photo`;
+  $('#mapCount').textContent='('+(adminProducts.length-mapped)+' to map)';
+  renderMapList();
+}
+let mapShown=60, selected=new Set();
+function filteredMapProducts(){
+  const q=$('#mq').value.trim().toLowerCase();
+  const status=$('#mFilterStatus').value;
+  let list=adminProducts.slice();
+  if(status==='unmapped') list=list.filter(p=>!p.mapped);
+  else if(status==='mapped') list=list.filter(p=>p.mapped);
+  else if(status==='noimg') list=list.filter(p=>!p.imageUrl && p.inStock);
+  if(q) list=list.filter(p=>((p.displayName||p.rawName||'')+' '+(p.brand||p.autoBrand||'')+' '+p.id).toLowerCase().includes(q));
+  const sort=$('#mSort').value;
+  list.sort((a,b)=> sort==='name'
+    ? (a.displayName||a.rawName||'').localeCompare(b.displayName||b.rawName||'')
+    : (b.totalStock||0)-(a.totalStock||0));
+  if(status==='unmapped'){ /* keep in-stock first within unmapped */ list.sort((a,b)=>(b.inStock?1:0)-(a.inStock?1:0)); }
+  return list;
+}
+function renderMapList(){
+  const list=filteredMapProducts();
+  const box=$('#mapList');
+  box.innerHTML = list.length? list.slice(0,mapShown).map(p=>{
+    const img=p.imageUrl?`<img src="${esc(p.imageUrl)}">`:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg>';
+    const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+'–'+money(p.priceMax)):'—';
+    return `<div class="mrow" data-id="${esc(p.id)}">
+      <input type="checkbox" class="mchk" data-id="${esc(p.id)}" ${selected.has(p.id)?'checked':''}>
+      <div class="mthumb">${img}</div>
+      <div class="minfo">
+        <div class="mname">${esc(p.displayName||p.rawName||p.id)}</div>
+        <div class="mmeta">${esc(p.id)} · ${price} · ${p.totalStock||0} in stock · ${(p.sizes||[]).length} sizes</div>
+      </div>
+      <span class="tag ${p.mapped?'mapped':'raw'}">${p.mapped?'Mapped':'Raw'}</span>
+      ${p.imageUrl?'':'<span class="tag noimg">No photo</span>'}
+      <button class="btn sm openMap" data-id="${esc(p.id)}">Edit</button>
+    </div>`;
+  }).join('') : '<div class="state">No products match.</div>';
+  $('#mapMore').innerHTML = list.length>mapShown ? `<button class="btn" id="moreBtn">Show more (${list.length-mapShown} left)</button>` : '';
+  if($('#moreBtn')) $('#moreBtn').onclick=()=>{ mapShown+=60; renderMapList(); };
+  $$('.openMap').forEach(b=>b.onclick=()=>openMapEditor(b.dataset.id));
+  $$('.mchk').forEach(c=>c.onchange=()=>{ c.checked?selected.add(c.dataset.id):selected.delete(c.dataset.id); updateBulk(); });
+}
+function updateBulk(){
+  const bar=$('#bulkBar');
+  if(selected.size){ bar.classList.remove('hidden'); $('#bulkN').textContent=selected.size; }
+  else bar.classList.add('hidden');
+}
+
+const GENDERS=['','Men','Women','Boys','Girls','Kids','Unisex'];
+const CATS=['','Chappals','Sandals','Sliders','Sports Shoes','Sneakers','Formal','Loafers','Crocs','Clogs','Belly','Moccasins','School Shoes','Fancy','Socks','Belts','Wallets','Other'];
+function opts(arr,val){ return arr.map(o=>`<option ${o===val?'selected':''}>${o}</option>`).join(''); }
+
+function openMapEditor(id){
+  const p=adminProducts.find(x=>x.id===id); if(!p) return;
+  const sizeStr=(p.sizes||[]).map(s=>`${s.label}(${s.stock})`).join('  ');
+  const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+'–'+money(p.priceMax)):'—';
+  const img=p.imageUrl?`<img src="${esc(p.imageUrl)}">`:`<div class="ph"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg><span>No photo yet</span></div>`;
+  openSheet(`
+    <div class="sheet-head"><h2>Map product</h2><button class="x" onclick="closeSheet()">×</button></div>
+    <div class="sheet-body">
+      <div class="detail-img" style="max-height:220px" id="mapImg">${img}</div>
+      <div style="display:flex;gap:8px;margin-bottom:18px">
+        <input type="file" id="mapImgFile" accept="image/*" capture="environment" class="hidden">
+        <button class="btn sm" id="mapUpload">${p.imageUrl?'Replace photo':'Add photo'}</button>
+        ${p.imageUrl?`<button class="btn sm ghost danger" id="mapRemoveImg">Remove</button>`:''}
+      </div>
+      <div class="raw-box">
+        <div class="rline"><b>From file</b><span>${esc(p.rawName||'—')}</span></div>
+        <div class="rline"><b>Code</b><span>${esc(p.id)}</span></div>
+        <div class="rline"><b>Group</b><span>${esc(p.group||'—')} · ${esc(p.subGroup||'—')}</span></div>
+        <div class="rline"><b>Price</b><span>${price}</span></div>
+        <div class="rline"><b>Sizes</b><span>${esc(sizeStr||'—')}</span></div>
+      </div>
+      <div class="field"><label>Display name</label><input id="f_name" value="${esc(p.displayName||p.rawName||'')}"></div>
+      <div class="two">
+        <div class="field"><label>Brand</label><input id="f_brand" value="${esc(p.brand||p.autoBrand||'')}" placeholder="${esc(p.autoBrand||'')}"></div>
+        <div class="field"><label>Colour</label><input id="f_color" value="${esc(p.color||p.colorHint||'')}" placeholder="${esc(p.colorHint||'')}"></div>
+      </div>
+      <div class="two">
+        <div class="field"><label>Gender</label><select id="f_gender">${opts(GENDERS,p.gender||p.autoGender||'')}</select></div>
+        <div class="field"><label>Category</label><select id="f_cat">${opts(CATS,p.category||p.autoCategory||'')}</select></div>
+      </div>
+      <div class="field"><label>Notes (optional)</label><textarea id="f_notes" rows="2">${esc(p.notes||'')}</textarea></div>
+      <div style="display:flex;gap:10px;margin-top:6px">
+        <button class="btn primary" id="saveMap">Save &amp; mark mapped</button>
+        <button class="btn ghost" onclick="closeSheet()">Cancel</button>
+      </div>
+    </div>`);
+  $('#mapUpload').onclick=()=>$('#mapImgFile').click();
+  $('#mapImgFile').onchange=async e=>{ const f=e.target.files[0]; if(f) await uploadImageFor(p.id,f,'#mapImg'); };
+  if($('#mapRemoveImg')) $('#mapRemoveImg').onclick=async()=>{ await db.collection(COL).doc(p.id).set({imageUrl:firebase.firestore.FieldValue.delete()},{merge:true}); toast('Photo removed'); closeSheet(); loadAdminData(); };
+  $('#saveMap').onclick=async()=>{
+    await db.collection(COL).doc(p.id).set({
+      displayName:$('#f_name').value.trim(), brand:$('#f_brand').value.trim(),
+      color:$('#f_color').value.trim(), gender:$('#f_gender').value, category:$('#f_cat').value,
+      notes:$('#f_notes').value.trim(), mapped:true
+    },{merge:true});
+    toast('Saved'); closeSheet(); cachedProducts=null; loadAdminData();
+  };
+}
+/* bulk edit */
+function bindBulk(){
+  $('#bulkClear').onclick=()=>{ selected.clear(); renderMapList(); updateBulk(); };
+  $('#bulkEdit').onclick=()=>{
+    openSheet(`<div class="sheet-head"><h2>Set for ${selected.size} products</h2><button class="x" onclick="closeSheet()">×</button></div>
+    <div class="sheet-body">
+      <p class="sub">Leave a field blank to keep each product's current value.</p>
+      <div class="field"><label>Brand</label><input id="b_brand"></div>
+      <div class="two">
+        <div class="field"><label>Gender</label><select id="b_gender">${opts(GENDERS,'')}</select></div>
+        <div class="field"><label>Category</label><select id="b_cat">${opts(CATS,'')}</select></div>
+      </div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin:6px 0 14px"><input type="checkbox" id="b_mark" checked> Mark these as mapped</label>
+      <button class="btn primary" id="b_save">Apply to ${selected.size}</button>
+    </div>`);
+    $('#b_save').onclick=async()=>{
+      const brand=$('#b_brand').value.trim(), g=$('#b_gender').value, c=$('#b_cat').value, mark=$('#b_mark').checked;
+      const ids=[...selected]; const CH=450;
+      for(let i=0;i<ids.length;i+=CH){
+        const batch=db.batch();
+        ids.slice(i,i+CH).forEach(id=>{
+          const d={}; if(brand)d.brand=brand; if(g)d.gender=g; if(c)d.category=c; if(mark)d.mapped=true;
+          batch.set(db.collection(COL).doc(id),d,{merge:true});
+        });
+        await batch.commit();
+      }
+      toast('Updated '+ids.length+' products'); selected.clear(); closeSheet(); cachedProducts=null; loadAdminData(); updateBulk();
+    };
+  };
+}
+
+/* =====================================================================
+   IMAGES — compress + upload
+   ===================================================================== */
+function compress(file, max=800, quality=0.72){
+  return new Promise((res,rej)=>{
+    const img=new Image(); const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      let {width:w,height:h}=img;
+      if(w>h && w>max){ h=Math.round(h*max/w); w=max; } else if(h>=w && h>max){ w=Math.round(w*max/h); h=max; }
+      const c=document.createElement('canvas'); c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img,0,0,w,h);
+      c.toBlob(b=>{ URL.revokeObjectURL(url); b?res(b):rej(new Error('compress failed')); },'image/jpeg',quality);
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); rej(new Error('bad image')); };
+    img.src=url;
+  });
+}
+async function uploadImageFor(base, file, previewSel){
+  try{
+    if(previewSel) $(previewSel).innerHTML='<div class="spinner"></div>';
+    const blob=await compress(file);
+    const ref=storage.ref().child('catalog/'+base+'.jpg');
+    await ref.put(blob,{contentType:'image/jpeg'});
+    const url=await ref.getDownloadURL();
+    await db.collection(COL).doc(base).set({imageUrl:url},{merge:true});
+    if(previewSel) $(previewSel).innerHTML=`<img src="${esc(url)}">`;
+    cachedProducts=null;
+    const p=adminProducts.find(x=>x.id===base); if(p) p.imageUrl=url;
+    return url;
+  }catch(e){ console.error(e); toast('Upload failed: '+e.message,true); if(previewSel) $(previewSel).innerHTML='<div class="ph"><span>Upload failed</span></div>'; }
+}
+function bindBatchImages(){
+  const drop=$('#imgDrop'), inp=$('#imgFiles');
+  $('#pickImgs').onclick=()=>inp.click();
+  ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hot');}));
+  drop.addEventListener('drop',e=>{e.preventDefault(); batchImages([...e.dataTransfer.files]);});
+  inp.onchange=e=>batchImages([...e.target.files]);
+}
+async function batchImages(files){
+  if(!adminProducts.length) await loadAdminData();
+  const ids=new Set(adminProducts.map(p=>p.id));
+  const rep=$('#imgReport'); let ok=0, miss=[], fail=0;
+  rep.innerHTML='<div class="progress"><i id="ibar"></i></div><div id="itext" class="sub" style="margin:6px 0 0"></div>';
+  for(let i=0;i<files.length;i++){
+    const f=files[i]; const base=f.name.replace(/\.[^.]+$/,'').trim();
+    if(!ids.has(base)){ miss.push(f.name); }
+    else { const u=await uploadImageFor(base,f); u?ok++:fail++; }
+    $('#ibar').style.width=Math.round((i+1)/files.length*100)+'%';
+    $('#itext').textContent=`${i+1} / ${files.length} processed`;
+  }
+  rep.innerHTML=`<div class="stat-row">
+    <div class="stat new"><div class="num">${ok}</div><div class="lbl">Uploaded &amp; linked</div></div>
+    <div class="stat oos"><div class="num">${miss.length}</div><div class="lbl">No matching code</div></div>
+    <div class="stat iss"><div class="num">${fail}</div><div class="lbl">Failed</div></div>
+  </div>${miss.length?`<div class="sub">Unmatched filenames (rename to the product code): ${miss.map(esc).join(', ')}</div>`:''}`;
+  toast(ok+' photos linked'); loadAdminData();
+}
+
+/* =====================================================================
+   DATA ISSUES
+   ===================================================================== */
+function renderIssuesFromDB(){
+  const list=(adminProducts.length?adminProducts:[]).filter(p=>p.issues && p.issues.length && p.inStock);
+  $('#issueCount').textContent=list.length?'('+list.length+')':'';
+  const box=$('#issueList');
+  box.innerHTML = list.length ? list.map(p=>`
+    <div class="issue"><span class="idot"></span><div style="flex:1">
+      <div class="iwhat"><span class="icode">${esc(p.id)}</span> ${esc(p.displayName||p.rawName||'')}</div>
+      <div class="iraw">${p.issues.map(esc).join(' · ')}</div>
+    </div></div>`).join('')
+    : '<div class="state"><h3>All clear</h3>No in-stock products are missing prices, sizes or names.</div>';
+}
+
+/* =====================================================================
+   CLIENT — load in-stock, cache, search / sort / filter
+   ===================================================================== */
+let cachedProducts=null, previewMode=false;
+const CACHE_KEY='sr_catalog_cache', CACHE_TTL=30*60*1000;
+async function loadClient(){
+  const box=$('#clientResults');
+  try{ const c=JSON.parse(sessionStorage.getItem(CACHE_KEY)||'null'); if(c && Date.now()-c.t<CACHE_TTL){ cachedProducts=c.d; } }catch(e){}
+  if(!cachedProducts){
+    const configured = fbReady && !String(CONFIG.firebase.apiKey).startsWith('PASTE');
+    if(configured){
+      try{
+        const snap=await db.collection(COL).where('inStock','==',true).get();
+        cachedProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
+        sessionStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
+      }catch(e){ console.error(e); cachedProducts=SAMPLE.slice(); previewMode=true; }
+    } else { cachedProducts=SAMPLE.slice(); previewMode=true; }
+  }
+  renderActiveFilters(); renderClient();
+}
+
+/* Sample catalog — shown only when Firebase isn't connected, so the UI is testable in preview. */
+const SAMPLE=[
+  {id:'N6977',displayName:'Aerowalk AM01 Grey',brand:'Aerowalk',gender:'Men',category:'Sports Shoes',color:'Grey',priceMin:1299,priceMax:1299,mapped:true,inStock:true,sizes:[{label:'40',num:40,stock:1},{label:'41',num:41,stock:2},{label:'42',num:42,stock:2},{label:'43',num:43,stock:2},{label:'44',num:44,stock:1},{label:'45',num:45,stock:1}]},
+  {id:'N6948',displayName:'Aerowalk AT55 Grey',brand:'Aerowalk',gender:'Women',category:'Sports Shoes',color:'Grey',priceMin:719,priceMax:719,mapped:true,inStock:true,sizes:[{label:'36',num:36,stock:3},{label:'37',num:37,stock:1},{label:'38',num:38,stock:2},{label:'39',num:39,stock:1},{label:'40',num:40,stock:3}]},
+  {id:'N6942',displayName:'Aerowalk AT55 Rose',brand:'Aerowalk',gender:'Women',category:'Sports Shoes',color:'Rose',priceMin:719,priceMax:719,mapped:true,inStock:true,sizes:[{label:'36',num:36,stock:2},{label:'37',num:37,stock:1},{label:'40',num:40,stock:2}]},
+  {id:'N6936',displayName:'Aerowalk BM46 Gold',brand:'Aerowalk',gender:'Women',category:'Belly',color:'Gold',priceMin:619,priceMax:619,mapped:true,inStock:true,sizes:[{label:'36',num:36,stock:1},{label:'37',num:37,stock:1},{label:'38',num:38,stock:1},{label:'39',num:39,stock:1},{label:'40',num:40,stock:1},{label:'41',num:41,stock:1}]},
+  {id:'N5241',displayName:'Lancer Gola White',brand:'LANCER',gender:'Men',category:'Sneakers',color:'White',priceMin:899,priceMax:899,mapped:true,inStock:true,sizes:[{label:'6',num:6,stock:2},{label:'7',num:7,stock:3},{label:'8',num:8,stock:2},{label:'9',num:9,stock:1},{label:'10',num:10,stock:2}]},
+  {id:'N7183',displayName:'Troos 01 Grey',brand:'TROOS',gender:'Kids',category:'Sports Shoes',color:'Grey',priceMin:549,priceMax:549,mapped:true,inStock:true,sizes:[{label:'1',num:1,stock:2},{label:'2',num:2,stock:2},{label:'3',num:3,stock:2},{label:'4',num:4,stock:1},{label:'5',num:5,stock:1}]},
+  {id:'N6213',displayName:'Mogali 02 Black',brand:'MOSACH',gender:'Boys',category:'Sandals',color:'Black',priceMin:449,priceMax:449,mapped:false,inStock:true,sizes:[{label:'1',num:1,stock:2},{label:'2',num:2,stock:1},{label:'3',num:3,stock:2},{label:'5',num:5,stock:1}]},
+  {id:'N3445',displayName:'',rawName:'RELAXO PT-NU TENNIS-04',brand:'RELAXO',gender:'',category:'',color:'White',priceMin:399,priceMax:399,mapped:false,inStock:true,sizes:[{label:'2',num:2,stock:3},{label:'3',num:3,stock:4},{label:'4',num:4,stock:3},{label:'6',num:6,stock:1}]},
+  {id:'N6161',displayName:'Rider 04 Grey',brand:'BIDEN',gender:'Men',category:'Formal',color:'Grey',priceMin:1149,priceMax:1149,mapped:true,inStock:true,sizes:[{label:'6',num:6,stock:2},{label:'7',num:7,stock:2},{label:'8',num:8,stock:2},{label:'9',num:9,stock:2}]},
+  {id:'N6222',displayName:'Metro 05 Grey',brand:'MOSACH',gender:'Men',category:'Loafers',color:'Grey',priceMin:1299,priceMax:1299,mapped:true,inStock:true,sizes:[{label:'6',num:6,stock:1},{label:'7',num:7,stock:3},{label:'8',num:8,stock:2},{label:'10',num:10,stock:1}]},
+  {id:'N5282',displayName:'Lancer Candy Black',brand:'LANCER',gender:'Women',category:'Chappals',color:'Black',priceMin:299,priceMax:299,mapped:true,inStock:true,sizes:[{label:'4',num:4,stock:4},{label:'5',num:5,stock:3},{label:'6',num:6,stock:1},{label:'8',num:8,stock:4}]},
+  {id:'N6912',displayName:'Aerowalk AT94 Brown',brand:'Aerowalk',gender:'Women',category:'Sandals',color:'Brown',priceMin:689,priceMax:689,mapped:true,inStock:true,sizes:[{label:'37',num:37,stock:2},{label:'38',num:38,stock:2},{label:'39',num:39,stock:2},{label:'40',num:40,stock:1}]}
+];
+const cf={ brand:'', gender:'', category:'', size:'', color:'', pmin:'', pmax:'' };
+function nameOf(p){ return p.displayName||p.rawName||p.id; }
+function brandOf(p){ return p.brand||p.autoBrand||''; }
+function genderOf(p){ return p.gender||p.autoGender||''; }
+function catOf(p){ return p.category||p.autoCategory||''; }
+function colorOf(p){ return p.color||p.colorHint||''; }
+
+function activeCount(){ return ['brand','gender','category','size','color'].filter(k=>cf[k]).length + ((cf.pmin||cf.pmax)?1:0); }
+function renderActiveFilters(){
+  const n=activeCount();
+  const fc=$('#filterCount'); fc.textContent=n; fc.classList.toggle('hidden',n===0);
+  $('#filterBtn').classList.toggle('active',n>0);
+  const bar=$('#activeFilters');
+  if(!n){ bar.innerHTML=''; return; }
+  const chips=[];
+  const add=(k,txt)=>chips.push(`<span class="af-chip">${esc(txt)} <button data-clr="${k}">×</button></span>`);
+  if(cf.gender) add('gender',cf.gender);
+  if(cf.brand) add('brand',cf.brand);
+  if(cf.color) add('color',cf.color);
+  if(cf.category) add('category',cf.category);
+  if(cf.size) add('size','Size '+cf.size);
+  if(cf.pmin||cf.pmax) add('price',`${CONFIG.currency}${cf.pmin||0}–${cf.pmax||'∞'}`);
+  bar.innerHTML=chips.join('')+`<button class="af-clear" id="clearAll">Clear all</button>`;
+  $$('#activeFilters [data-clr]').forEach(b=>b.onclick=()=>{ const k=b.dataset.clr; if(k==='price'){cf.pmin='';cf.pmax='';} else cf[k]=''; renderActiveFilters(); renderClient(); });
+  $('#clearAll').onclick=()=>{ Object.keys(cf).forEach(k=>cf[k]=''); renderActiveFilters(); renderClient(); };
+}
+function openFilterPanel(){
+  const uniq=arr=>[...new Set(arr.filter(Boolean))];
+  const brands=uniq(cachedProducts.map(brandOf)).sort();
+  const genders=uniq(cachedProducts.map(genderOf)).sort();
+  const cats=uniq(cachedProducts.map(catOf)).sort();
+  const colors=uniq(cachedProducts.map(colorOf)).sort();
+  const sizes=uniq(cachedProducts.flatMap(p=>(p.sizes||[]).filter(s=>s.stock>0).map(s=>s.label)))
+    .sort((a,b)=>{const na=parseFloat(a),nb=parseFloat(b); return (isNaN(na)||isNaN(nb))?String(a).localeCompare(b):na-nb;});
+  const group=(title,key,items,sz)=> items.length?`<div class="fgroup"><h4>${title}</h4><div class="chips">`+
+    items.map(v=>`<button class="chip ${sz?'size':''} ${cf[key]===v?'on':''}" data-fk="${key}" data-fv="${esc(v)}">${esc(v)}</button>`).join('')+`</div></div>`:'';
+  openSheet(`
+    <div class="sheet-head"><h2>Filters</h2><button class="x" onclick="closeSheet()">×</button></div>
+    <div class="sheet-body">
+      ${group('For','gender',genders)}
+      ${group('Brand','brand',brands)}
+      ${group('Colour','color',colors)}
+      ${group('Type','category',cats)}
+      ${group('Size','size',sizes,true)}
+      <div class="fgroup"><h4>Price (${CONFIG.currency})</h4><div class="price-row">
+        <input type="number" inputmode="numeric" id="fpmin" placeholder="Min" value="${esc(cf.pmin)}">
+        <span style="color:var(--muted)">to</span>
+        <input type="number" inputmode="numeric" id="fpmax" placeholder="Max" value="${esc(cf.pmax)}">
+      </div></div>
+      <div style="display:flex;gap:10px;position:sticky;bottom:0;background:var(--surface);padding-top:10px">
+        <button class="btn primary" id="fApply" style="flex:1;justify-content:center">Show results</button>
+        <button class="btn ghost" id="fReset">Reset</button>
+      </div>
+    </div>`,true);
+  $$('#sheet .chip[data-fk]').forEach(c=>c.onclick=()=>{
+    const k=c.dataset.fk, v=c.dataset.fv;
+    cf[k]= cf[k]===v ? '' : v;                       // tap to toggle
+    $$('#sheet .chip[data-fk="'+k+'"]').forEach(x=>x.classList.toggle('on', x.dataset.fv===cf[k]));
+  });
+  $('#fApply').onclick=()=>{ cf.pmin=$('#fpmin').value.trim(); cf.pmax=$('#fpmax').value.trim(); closeSheet(); renderActiveFilters(); renderClient(); };
+  $('#fReset').onclick=()=>{ Object.keys(cf).forEach(k=>cf[k]=''); closeSheet(); renderActiveFilters(); renderClient(); };
+}
+$('#filterBtn').onclick=openFilterPanel;
+function renderClient(){
+  const q=$('#q').value.trim().toLowerCase();
+  let list=cachedProducts.filter(p=>{
+    if(cf.brand && brandOf(p)!==cf.brand) return false;
+    if(cf.gender && genderOf(p)!==cf.gender) return false;
+    if(cf.category && catOf(p)!==cf.category) return false;
+    if(cf.color && colorOf(p)!==cf.color) return false;
+    if(cf.size && !(p.sizes||[]).some(s=>s.label===cf.size && s.stock>0)) return false;
+    if(cf.pmin && (p.priceMin||0)<Number(cf.pmin)) return false;
+    if(cf.pmax && (p.priceMin||0)>Number(cf.pmax)) return false;
+    if(q){ const hay=(nameOf(p)+' '+brandOf(p)+' '+colorOf(p)+' '+p.id).toLowerCase(); if(!hay.includes(q)) return false; }
+    return true;
+  });
+  const sort=$('#sortBy').value;
+  list.sort((a,b)=>{
+    if(sort==='price_asc') return (a.priceMin||0)-(b.priceMin||0);
+    if(sort==='price_desc') return (b.priceMin||0)-(a.priceMin||0);
+    if(sort==='new') return String(b.id).localeCompare(String(a.id));
+    return nameOf(a).localeCompare(nameOf(b));
+  });
+  $('#clientSub').textContent=`${cachedProducts.length} products in stock`;
+  const banner = previewMode ? '<div class="preview-banner">◆ Preview data — connect your Firebase config to load the real SR Shoes catalog.</div>' : '';
+  $('#clientResults').innerHTML = banner + (list.length ? `<div class="count" style="margin-bottom:10px">${list.length} shown</div><div class="grid">`+list.map(cardHTML).join('')+'</div>'
+    : '<div class="state"><h3>Nothing matches</h3>Try clearing a filter or searching a different term.</div>');
+  $$('.card').forEach(c=>c.onclick=()=>openDetail(c.dataset.id));
+}
+function cardHTML(p){
+  const sizes=(p.sizes||[]).filter(s=>s.stock>0).slice(0,7);
+  const priceTxt=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):`${money(p.priceMin)} <small>–</small> ${money(p.priceMax)}`) : '—';
+  const img=p.imageUrl?`<img src="${esc(p.imageUrl)}" loading="lazy" alt="${esc(nameOf(p))}">`
+    :`<div class="ph"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 16c2-1 4-1 5 0 2 1 3 1 5 0l8-3c1-.4 2 .2 2 1.3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M4 16V9a2 2 0 0 1 2-2h3l2 3"/></svg><span>Photo coming soon</span></div>`;
+  return `<div class="card" data-id="${esc(p.id)}">
+    <div class="thumb">${img}${p.mapped?'':''}</div>
+    <div class="card-body">
+      ${brandOf(p)?`<div class="card-brand">${esc(brandOf(p))}</div>`:''}
+      <div class="card-name">${esc(nameOf(p))}</div>
+      <div class="card-price">${priceTxt}</div>
+      ${sizes.length?`<div class="sizes">${sizes.map(s=>`<span class="sz">${esc(s.label)}</span>`).join('')}</div>`:''}
+    </div></div>`;
+}
+function openDetail(id){
+  const p=cachedProducts.find(x=>x.id===id); if(!p) return;
+  const img=p.imageUrl?`<img src="${esc(p.imageUrl)}" alt="${esc(nameOf(p))}">`
+    :`<div class="ph"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 16c2-1 4-1 5 0 2 1 3 1 5 0l8-3c1-.4 2 .2 2 1.3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M4 16V9a2 2 0 0 1 2-2h3l2 3"/></svg><span>Photo coming soon</span></div>`;
+  const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+' – '+money(p.priceMax)):'—';
+  const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${s.stock} left</div></div>`).join('');
+  let wa='';
+  if(CONFIG.whatsapp.enabled){
+    const msg=encodeURIComponent(`Hi, I'm interested in: ${nameOf(p)} (${p.id})`);
+    wa=`<a class="btn primary" style="width:100%;justify-content:center;text-decoration:none;margin-top:16px" href="https://wa.me/${CONFIG.whatsapp.number}?text=${msg}" target="_blank" rel="noopener">Enquire on WhatsApp</a>`;
+  }
+  openSheet(`
+    <div class="sheet-head"><h2>${esc(nameOf(p))}</h2><button class="x" onclick="closeSheet()">×</button></div>
+    <div class="sheet-body">
+      <div class="detail-img">${img}</div>
+      ${brandOf(p)?`<div class="card-brand" style="margin-bottom:6px">${esc(brandOf(p))}</div>`:''}
+      <div style="font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px">${price}</div>
+      ${catOf(p)?`<div class="kv"><b>Type</b><span>${esc(catOf(p))}${genderOf(p)?' · '+esc(genderOf(p)):''}</span></div>`:''}
+      ${p.color?`<div class="kv"><b>Colour</b><span>${esc(p.color)}</span></div>`:''}
+      <div class="kv"><b>Code</b><span>${esc(p.id)}</span></div>
+      <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 4px">Available sizes</div>
+      <div class="size-grid">${grid||'<span class="sub">—</span>'}</div>
+      ${wa}
+    </div>`);
+}
+
+/* =====================================================================
+   Sheet + nav + admin gate + boot
+   ===================================================================== */
+function openSheet(html, drawer){ const s=$('#sheet'); s.className='sheet'+(drawer?' drawer':''); s.innerHTML=html; $('#overlay').classList.add('show'); }
+function closeSheet(){ $('#overlay').classList.remove('show'); }
+$('#overlay').onclick=e=>{ if(e.target.id==='overlay') closeSheet(); };
+
+function showClient(){ $('#clientView').classList.remove('hidden'); $('#adminView').classList.add('hidden'); $('#navClient').style.color='var(--ink)'; $('#navAdmin').style.color=''; }
+function showAdmin(){ $('#adminView').classList.remove('hidden'); $('#clientView').classList.add('hidden'); $('#navAdmin').style.color='var(--ink)'; $('#navClient').style.color=''; }
+$('#navClient').onclick=showClient;
+$('#navAdmin').onclick=showAdmin;
+
+// admin gate
+function tryUnlock(){
+  if($('#pinInput').value===CONFIG.adminPin){
+    sessionStorage.setItem('sr_admin','1'); $('#pinGate').classList.add('hidden'); $('#adminContent').classList.remove('hidden');
+    loadAdminData().then(renderIssuesFromDB);
+  } else toast('Wrong PIN',true);
+}
+$('#pinBtn').onclick=tryUnlock;
+$('#pinInput').onkeydown=e=>{ if(e.key==='Enter') tryUnlock(); };
+if(sessionStorage.getItem('sr_admin')==='1'){ $('#pinGate').classList.add('hidden'); $('#adminContent').classList.remove('hidden'); }
+
+// admin tabs
+$$('.tab').forEach(t=>t.onclick=()=>{
+  $$('.tab').forEach(x=>x.classList.remove('on')); t.classList.add('on');
+  $$('.tabpane').forEach(p=>p.classList.add('hidden'));
+  $('#pane-'+t.dataset.tab).classList.remove('hidden');
+});
+
+// client control bindings
+$('#q').addEventListener('input',()=>renderClient());
+$('#sortBy').onchange=()=>renderClient();
+$('#mq') && ($('#mq').addEventListener('input',renderMapList));
+$('#mFilterStatus') && ($('#mFilterStatus').onchange=renderMapList);
+$('#mSort') && ($('#mSort').onchange=renderMapList);
+
+// boot
+bindImport(); bindBulk(); bindBatchImages();
+if(sessionStorage.getItem('sr_admin')==='1'){ loadAdminData().then(renderIssuesFromDB); }
+loadClient();
+
+// optional service worker (only if you add sw.js alongside this file)
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+</script>
+</body>
+</html>
