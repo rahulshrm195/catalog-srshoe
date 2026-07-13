@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+<meta http-equiv="Pragma" content="no-cache" />
+<meta http-equiv="Expires" content="0" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0E7C6B" />
@@ -11,15 +14,17 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
+const APP_VERSION = "1.0.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
+
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
   firebase: {
-    apiKey: "PASTE_API_KEY",
-    authDomain: "PASTE_PROJECT.firebaseapp.com",
-    projectId: "PASTE_PROJECT_ID",
-    storageBucket: "PASTE_PROJECT.firebasestorage.app",
-    messagingSenderId: "PASTE_SENDER_ID",
-    appId: "PASTE_APP_ID"
+    apiKey: "AIzaSyBtt5-5BfxTLUxjGWwS1kSGxY6d6heF0ng",
+    authDomain: "sr-shoes.firebaseapp.com",
+    projectId: "sr-shoes",
+    storageBucket: "sr-shoes.firebasestorage.app",
+    messagingSenderId: "80079081348",
+    appId: "1:80079081348:web:508c19766d6bdf5fbf57d1"
   },
 
   // 2) Admin gate. Client side is open; this only unlocks import / mapping / images.
@@ -277,6 +282,7 @@ select.control:focus{border-color:var(--accent)}
     <div class="eyebrow">Admin</div>
     <h1 class="page">Catalog control</h1>
     <p class="sub" id="adminSub">—</p>
+    <p class="sub" style="margin-top:-14px;font-family:ui-monospace,monospace;font-size:12px">build v<span id="verStamp"></span></p>
 
     <div class="tabs">
       <button class="tab on" data-tab="import">Import stock</button>
@@ -541,24 +547,33 @@ async function applyImport(){
   const ops=[]; // {ref, data}
   parsed.forEach(p=>{
     const {base,...rest}=p; const {colorHint,...fileFields}=rest;
+    if(!base) return; // skip any row that produced an empty product code
     ops.push({ref:db.collection(COL).doc(base), data:{ ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp() }});
   });
   goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSeen:firebase.firestore.FieldValue.serverTimestamp() }}));
-  const CH=450; let done=0;
-  for(let i=0;i<ops.length;i+=CH){
-    const batch=db.batch();
-    ops.slice(i,i+CH).forEach(o=>batch.set(o.ref,o.data,{merge:true}));
-    await batch.commit();
-    done=Math.min(i+CH,ops.length);
-    $('#pbar').style.width=Math.round(done/ops.length*100)+'%';
-    $('#ptext').textContent=`Writing ${done} / ${ops.length}…`;
+  const CH=400; let done=0;
+  try{
+    for(let i=0;i<ops.length;i+=CH){
+      const batch=db.batch();
+      ops.slice(i,i+CH).forEach(o=>batch.set(o.ref,o.data,{merge:true}));
+      await batch.commit();
+      done=Math.min(i+CH,ops.length);
+      $('#pbar').style.width=Math.round(done/ops.length*100)+'%';
+      $('#ptext').textContent=`Writing ${done} / ${ops.length}…`;
+    }
+    $('#ptext').textContent=`Done — ${ops.length} products updated.`;
+    toast('Import applied');
+    pendingImport=null;
+    cachedProducts=null; // invalidate client cache
+    await loadAdminData();
+    renderIssuesFromDB();
+  }catch(err){
+    console.error('Import failed at', done, '/', ops.length, err);
+    $('#ptext').innerHTML = `<b style="color:var(--danger)">Stopped after ${done}/${ops.length} — ${esc(err.message||String(err))}</b>`;
+    toast('Import failed: '+(err.message||err), true);
+    $('#applyImport').disabled=false; $('#cancelImport').disabled=false;
+    $('#applyImport').textContent='Retry remaining';
   }
-  $('#ptext').textContent=`Done — ${ops.length} products updated.`;
-  toast('Import applied');
-  pendingImport=null;
-  cachedProducts=null; // invalidate client cache
-  await loadAdminData();
-  renderIssuesFromDB();
 }
 
 /* =====================================================================
@@ -983,8 +998,9 @@ bindImport(); bindBulk(); bindBatchImages();
 if(sessionStorage.getItem('sr_admin')==='1'){ loadAdminData().then(renderIssuesFromDB); }
 loadClient();
 
-// optional service worker (only if you add sw.js alongside this file)
-if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+document.title = 'SR Shoes Catalog — v'+APP_VERSION;
+const vs=document.getElementById('verStamp'); if(vs) vs.textContent=APP_VERSION;
+console.log('SR Shoes Catalog build', APP_VERSION);
 </script>
 </body>
 </html>
