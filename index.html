@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.2.4"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.2.5"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -1108,6 +1108,20 @@ function openDetail(id){
     }
   }
   renderGallery();
+
+  // Swipe support for mobile — the wrap div itself persists across re-renders (only its
+  // innerHTML changes), so binding once here is enough; no need to rebind per render.
+  const wrapEl=$('#detailImgWrap');
+  if(wrapEl){
+    let touchX=null;
+    wrapEl.addEventListener('touchstart', e=>{ touchX=e.touches[0].clientX; }, {passive:true});
+    wrapEl.addEventListener('touchend', e=>{
+      if(touchX===null || imgs.length<=1) return;
+      const dx=e.changedTouches[0].clientX-touchX;
+      if(Math.abs(dx)>40){ idx = dx<0 ? (idx+1)%imgs.length : (idx-1+imgs.length)%imgs.length; renderGallery(); }
+      touchX=null;
+    }, {passive:true});
+  }
 }
 
 /* =====================================================================
