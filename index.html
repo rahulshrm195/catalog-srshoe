@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.2.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.2.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -720,6 +720,7 @@ function openMapEditor(id){
     <div class="sheet-head"><h2>Map product</h2><button class="x" onclick="closeSheet()">×</button></div>
     <div class="sheet-body">
       <div class="mimg-grid" id="mimgGrid">${cells}</div>
+      ${imgs.length>1?`<button class="btn sm ghost danger" id="clearAllPhotos" style="margin:-10px 0 18px">Clear all ${imgs.length} photos</button>`:''}
       <input type="file" id="mapImgFile" accept="image/*" capture="environment" multiple class="hidden">
       <div class="raw-box">
         <div class="rline"><b>From file</b><span>${esc(p.rawName||'—')}</span></div>
@@ -756,6 +757,12 @@ function openMapEditor(id){
     markDirty();
     openMapEditor(p.id);
   });
+  if($('#clearAllPhotos')) $('#clearAllPhotos').onclick=async()=>{
+    await db.collection(COL).doc(p.id).set({images:[], imageUrl:firebase.firestore.FieldValue.delete()},{merge:true});
+    invalidateClientCache(); markDirty();
+    const ap=adminProducts.find(x=>x.id===p.id); if(ap){ ap.images=[]; ap.imageUrl=''; }
+    toast('Photos cleared'); openMapEditor(p.id);
+  };
   $('#saveMap').onclick=async()=>{
     await db.collection(COL).doc(p.id).set({
       displayName:$('#f_name').value.trim(), brand:$('#f_brand').value.trim(),
@@ -825,14 +832,14 @@ async function uploadImageFor(base, file, slot){
   // slot: 0-based position (0 = primary). Omit to append as a new photo.
   try{
     const blob=await compress(file);
-    const path='catalog/'+base+(slot?('_'+(slot+1)):'')+'.jpg';
-    const ref=storage.ref().child(path);
-    await ref.put(blob,{contentType:'image/jpeg'});
-    const url=await ref.getDownloadURL();
     const snap=await db.collection(COL).doc(base).get();
     const cur=imagesOf(snap.exists?snap.data():null);
     const arr=cur.slice();
-    const at = (slot==null) ? arr.length : slot;
+    const at = (slot==null) ? arr.length : slot;   // resolve real position FIRST
+    const path='catalog/'+base+(at?('_'+(at+1)):'')+'.jpg';  // then derive a path unique to that position
+    const ref=storage.ref().child(path);
+    await ref.put(blob,{contentType:'image/jpeg'});
+    const url=await ref.getDownloadURL();
     while(arr.length<at) arr.push('');
     arr[at]=url;
     const clean=arr.filter(Boolean);
