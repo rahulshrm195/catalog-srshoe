@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.0.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.2.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -156,8 +156,19 @@ select.control:focus{border-color:var(--accent)}
 .x{margin-left:auto; border:none; background:var(--bg); width:32px; height:32px; border-radius:9px; color:var(--muted); font-size:18px; line-height:1}
 
 /* detail */
-.detail-img{aspect-ratio:1/1; max-height:340px; width:100%; background:var(--bg); border-radius:12px; overflow:hidden; display:grid; place-items:center; margin-bottom:16px}
+.detail-img{aspect-ratio:1/1; max-height:340px; width:100%; background:var(--bg); border-radius:12px; overflow:hidden; display:grid; place-items:center; margin-bottom:12px; position:relative}
 .detail-img img{width:100%;height:100%;object-fit:contain}
+.gal-arrow{position:absolute; top:50%; transform:translateY(-50%); width:36px; height:36px; border-radius:50%; border:none; background:rgba(26,23,20,.55); color:#fff; font-size:20px; line-height:1; display:grid; place-items:center}
+.gal-arrow.left{left:10px} .gal-arrow.right{right:10px}
+.thumb-row{display:flex; gap:8px; margin-bottom:16px; overflow-x:auto}
+.thumb-mini{width:52px; height:52px; object-fit:cover; border-radius:8px; border:2px solid transparent; opacity:.6; cursor:pointer; flex-shrink:0}
+.thumb-mini.on{opacity:1; border-color:var(--accent)}
+.mimg-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); gap:10px; margin-bottom:18px}
+.mimg-cell{position:relative; aspect-ratio:1/1; border-radius:10px; overflow:hidden; background:var(--bg)}
+.mimg-cell img{width:100%;height:100%;object-fit:cover}
+.mimg-x{position:absolute; top:4px; right:4px; width:22px; height:22px; border-radius:50%; border:none; background:rgba(26,23,20,.65); color:#fff; font-size:14px; line-height:1}
+.mimg-add{aspect-ratio:1/1; border:2px dashed var(--line-strong); border-radius:10px; background:var(--bg); color:var(--muted); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:22px; font-weight:300}
+.mimg-add span{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em}
 .kv{display:flex; gap:8px; font-size:14px; padding:7px 0; border-bottom:1px solid var(--line)}
 .kv b{min-width:96px; color:var(--muted); font-weight:600}
 .size-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); gap:8px; margin:12px 0}
@@ -167,7 +178,8 @@ select.control:focus{border-color:var(--accent)}
 .size-cell.low .s{color:var(--warn)}
 
 /* ---------- Admin ---------- */
-.tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); padding:4px; border-radius:12px; margin-bottom:20px; width:fit-content; flex-wrap:wrap}
+.tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); padding:4px; border-radius:12px; width:fit-content; flex-wrap:wrap}
+.tabs-row{display:flex; align-items:center; gap:12px; margin-bottom:20px; flex-wrap:wrap}
 .tab{border:none; background:none; padding:8px 15px; border-radius:9px; font-weight:600; font-size:14px; color:var(--muted)}
 .tab.on{background:var(--accent); color:#fff}
 .panel{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:22px; box-shadow:var(--shadow)}
@@ -284,11 +296,15 @@ select.control:focus{border-color:var(--accent)}
     <p class="sub" id="adminSub">—</p>
     <p class="sub" style="margin-top:-14px;font-family:ui-monospace,monospace;font-size:12px">build v<span id="verStamp"></span></p>
 
-    <div class="tabs">
-      <button class="tab on" data-tab="import">Import stock</button>
-      <button class="tab" data-tab="map">Products <span id="mapCount"></span></button>
-      <button class="tab" data-tab="images">Photos</button>
-      <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
+    <div class="tabs-row">
+      <div class="tabs">
+        <button class="tab on" data-tab="import">Import stock</button>
+        <button class="tab" data-tab="map">Products <span id="mapCount"></span></button>
+        <button class="tab" data-tab="images">Photos</button>
+        <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
+      </div>
+      <button class="btn primary hidden" id="publishBtn">Publish <span id="publishN"></span> to catalog</button>
+      <span class="sub" id="publishedStamp" style="margin:0"></span>
     </div>
 
     <!-- IMPORT -->
@@ -407,6 +423,11 @@ function autoBrand(group,name){
   const g=String(group||'').trim();
   if(BRANDS.some(b=>b.toLowerCase()===g.toLowerCase())) return g;
   const p=String(name||'').match(/\(([^)]+)\)/); if(p) return p[1].trim();
+  const n=String(name||'').trim();
+  for(const b of BRANDS){
+    const re=new RegExp('^'+b.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'(?:\\b|\\s)','i');
+    if(re.test(n)) return b;
+  }
   return '';
 }
 function autoGender(group,sub){
@@ -562,11 +583,13 @@ async function applyImport(){
       $('#ptext').textContent=`Writing ${done} / ${ops.length}…`;
     }
     $('#ptext').textContent=`Done — ${ops.length} products updated.`;
-    toast('Import applied');
+    toast('Import applied — publishing to catalog…');
     pendingImport=null;
-    cachedProducts=null; // invalidate client cache
+    invalidateClientCache();
     await loadAdminData();
     renderIssuesFromDB();
+    await regenerateSnapshot(true);
+    toast('Import applied and published');
   }catch(err){
     console.error('Import failed at', done, '/', ops.length, err);
     $('#ptext').innerHTML = `<b style="color:var(--danger)">Stopped after ${done}/${ops.length} — ${esc(err.message||String(err))}</b>`;
@@ -584,11 +607,58 @@ async function loadAdminData(){
   const snap=await db.collection(COL).get();
   adminProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
   const mapped=adminProducts.filter(p=>p.mapped).length;
-  const noimg=adminProducts.filter(p=>p.inStock && !p.imageUrl).length;
+  const noimg=adminProducts.filter(p=>p.inStock && !imagesOf(p).length).length;
   $('#adminSub').textContent=`${adminProducts.length} products · ${mapped} mapped · ${adminProducts.filter(p=>p.inStock).length} in stock · ${noimg} in-stock without a photo`;
   $('#mapCount').textContent='('+(adminProducts.length-mapped)+' to map)';
   renderMapList();
 }
+
+/* =====================================================================
+   PUBLISH — the customer catalog is served from one small Storage file
+   (public/catalog.json), not a live Firestore query. This is what keeps
+   Firebase reads near-zero no matter how many customers browse: they
+   fetch one JSON file (billed as cheap Storage bandwidth) instead of
+   ~2,000 Firestore document reads per visit. Big operations (daily
+   import, batch photo upload) publish automatically. Small one-by-one
+   edits (mapping a single product, adding one photo) just mark the
+   catalog "dirty" — you publish whenever you're ready via the button.
+   ===================================================================== */
+let pendingPublish=0, lastPublished=(()=>{ try{return Number(localStorage.getItem('sr_last_published'))||null;}catch(e){return null;} })();
+function markDirty(){ pendingPublish++; updatePublishUI(); }
+function updatePublishUI(){
+  const b=$('#publishBtn');
+  if(pendingPublish>0){ b.classList.remove('hidden'); $('#publishN').textContent=pendingPublish; }
+  else b.classList.add('hidden');
+  $('#publishedStamp').textContent = lastPublished ? 'Live catalog last published '+timeAgo(lastPublished) : '';
+}
+function timeAgo(ts){
+  const s=Math.floor((Date.now()-ts)/1000);
+  if(s<60) return 'just now'; if(s<3600) return Math.floor(s/60)+'m ago';
+  if(s<86400) return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago';
+}
+async function regenerateSnapshot(silent){
+  try{
+    const snap=await db.collection(COL).where('inStock','==',true).get();
+    const list=snap.docs.map(d=>{
+      const p=d.data();
+      return { id:d.id, displayName:p.displayName||'', rawName:p.rawName||'', brand:p.brand||'', autoBrand:p.autoBrand||'',
+        gender:p.gender||'', autoGender:p.autoGender||'', category:p.category||'', autoCategory:p.autoCategory||'',
+        color:p.color||'', colorHint:p.colorHint||'', priceMin:p.priceMin||0, priceMax:p.priceMax||0,
+        images:imagesOf(p), mapped:!!p.mapped,
+        sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>({label:s.label,stock:s.stock})) };
+    });
+    const blob=new Blob([JSON.stringify(list)],{type:'application/json'});
+    const ref=storage.ref().child('public/catalog.json');
+    await ref.put(blob,{contentType:'application/json',cacheControl:'public, max-age=120'});
+    lastPublished=Date.now(); pendingPublish=0; updatePublishUI();
+    try{ localStorage.setItem('sr_last_published', String(lastPublished)); }catch(e){}
+    invalidateClientCache();
+    if(!silent) toast('Catalog published — '+list.length+' products live');
+    return true;
+  }catch(e){ console.error('Publish failed',e); if(!silent) toast('Publish failed: '+e.message,true); return false; }
+}
+$('#publishBtn').onclick=()=>regenerateSnapshot(false);
+
 let mapShown=60, selected=new Set();
 function filteredMapProducts(){
   const q=$('#mq').value.trim().toLowerCase();
@@ -596,7 +666,7 @@ function filteredMapProducts(){
   let list=adminProducts.slice();
   if(status==='unmapped') list=list.filter(p=>!p.mapped);
   else if(status==='mapped') list=list.filter(p=>p.mapped);
-  else if(status==='noimg') list=list.filter(p=>!p.imageUrl && p.inStock);
+  else if(status==='noimg') list=list.filter(p=>!imagesOf(p).length && p.inStock);
   if(q) list=list.filter(p=>((p.displayName||p.rawName||'')+' '+(p.brand||p.autoBrand||'')+' '+p.id).toLowerCase().includes(q));
   const sort=$('#mSort').value;
   list.sort((a,b)=> sort==='name'
@@ -609,7 +679,8 @@ function renderMapList(){
   const list=filteredMapProducts();
   const box=$('#mapList');
   box.innerHTML = list.length? list.slice(0,mapShown).map(p=>{
-    const img=p.imageUrl?`<img src="${esc(p.imageUrl)}">`:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg>';
+    const imgs=imagesOf(p);
+    const img=imgs[0]?`<img src="${esc(imgs[0])}">`:'<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg>';
     const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+'–'+money(p.priceMax)):'—';
     return `<div class="mrow" data-id="${esc(p.id)}">
       <input type="checkbox" class="mchk" data-id="${esc(p.id)}" ${selected.has(p.id)?'checked':''}>
@@ -619,7 +690,7 @@ function renderMapList(){
         <div class="mmeta">${esc(p.id)} · ${price} · ${p.totalStock||0} in stock · ${(p.sizes||[]).length} sizes</div>
       </div>
       <span class="tag ${p.mapped?'mapped':'raw'}">${p.mapped?'Mapped':'Raw'}</span>
-      ${p.imageUrl?'':'<span class="tag noimg">No photo</span>'}
+      ${imgs.length?(imgs.length>1?`<span class="tag mapped">${imgs.length} photos</span>`:''):'<span class="tag noimg">No photo</span>'}
       <button class="btn sm openMap" data-id="${esc(p.id)}">Edit</button>
     </div>`;
   }).join('') : '<div class="state">No products match.</div>';
@@ -642,16 +713,14 @@ function openMapEditor(id){
   const p=adminProducts.find(x=>x.id===id); if(!p) return;
   const sizeStr=(p.sizes||[]).map(s=>`${s.label}(${s.stock})`).join('  ');
   const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+'–'+money(p.priceMax)):'—';
-  const img=p.imageUrl?`<img src="${esc(p.imageUrl)}">`:`<div class="ph"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.6"/><path d="m3 17 5-5 4 4 3-3 6 6"/></svg><span>No photo yet</span></div>`;
+  const imgs=imagesOf(p);
+  const cells=imgs.map((u,i)=>`<div class="mimg-cell"><img src="${esc(u)}"><button class="mimg-x" data-i="${i}" title="Remove">×</button></div>`).join('')
+    + `<button class="mimg-add" id="mapAddPhoto">+<span>${imgs.length?'Add another':'Add photo'}</span></button>`;
   openSheet(`
     <div class="sheet-head"><h2>Map product</h2><button class="x" onclick="closeSheet()">×</button></div>
     <div class="sheet-body">
-      <div class="detail-img" style="max-height:220px" id="mapImg">${img}</div>
-      <div style="display:flex;gap:8px;margin-bottom:18px">
-        <input type="file" id="mapImgFile" accept="image/*" capture="environment" class="hidden">
-        <button class="btn sm" id="mapUpload">${p.imageUrl?'Replace photo':'Add photo'}</button>
-        ${p.imageUrl?`<button class="btn sm ghost danger" id="mapRemoveImg">Remove</button>`:''}
-      </div>
+      <div class="mimg-grid" id="mimgGrid">${cells}</div>
+      <input type="file" id="mapImgFile" accept="image/*" capture="environment" multiple class="hidden">
       <div class="raw-box">
         <div class="rline"><b>From file</b><span>${esc(p.rawName||'—')}</span></div>
         <div class="rline"><b>Code</b><span>${esc(p.id)}</span></div>
@@ -674,16 +743,27 @@ function openMapEditor(id){
         <button class="btn ghost" onclick="closeSheet()">Cancel</button>
       </div>
     </div>`);
-  $('#mapUpload').onclick=()=>$('#mapImgFile').click();
-  $('#mapImgFile').onchange=async e=>{ const f=e.target.files[0]; if(f) await uploadImageFor(p.id,f,'#mapImg'); };
-  if($('#mapRemoveImg')) $('#mapRemoveImg').onclick=async()=>{ await db.collection(COL).doc(p.id).set({imageUrl:firebase.firestore.FieldValue.delete()},{merge:true}); toast('Photo removed'); closeSheet(); loadAdminData(); };
+  $('#mapAddPhoto').onclick=()=>$('#mapImgFile').click();
+  $('#mapImgFile').onchange=async e=>{
+    const files=[...e.target.files]; if(!files.length) return;
+    toast('Uploading '+files.length+' photo'+(files.length>1?'s':'')+'…');
+    for(const f of files) await uploadImageFor(p.id, f);
+    markDirty();
+    openMapEditor(p.id); // re-render with updated gallery
+  };
+  $$('#mimgGrid .mimg-x').forEach(b=>b.onclick=async()=>{
+    await removeImageAt(p.id, parseInt(b.dataset.i,10));
+    markDirty();
+    openMapEditor(p.id);
+  });
   $('#saveMap').onclick=async()=>{
     await db.collection(COL).doc(p.id).set({
       displayName:$('#f_name').value.trim(), brand:$('#f_brand').value.trim(),
       color:$('#f_color').value.trim(), gender:$('#f_gender').value, category:$('#f_cat').value,
       notes:$('#f_notes').value.trim(), mapped:true
     },{merge:true});
-    toast('Saved'); closeSheet(); cachedProducts=null; loadAdminData();
+    markDirty();
+    toast('Saved — publish when ready to show customers'); closeSheet(); invalidateClientCache(); loadAdminData();
   };
 }
 /* bulk edit */
@@ -712,7 +792,8 @@ function bindBulk(){
         });
         await batch.commit();
       }
-      toast('Updated '+ids.length+' products'); selected.clear(); closeSheet(); cachedProducts=null; loadAdminData(); updateBulk();
+      markDirty();
+      toast('Updated '+ids.length+' products — publish when ready'); selected.clear(); closeSheet(); invalidateClientCache(); loadAdminData(); updateBulk();
     };
   };
 }
@@ -734,19 +815,50 @@ function compress(file, max=800, quality=0.72){
     img.src=url;
   });
 }
-async function uploadImageFor(base, file, previewSel){
+function imagesOf(p){
+  if(!p) return [];
+  if(Array.isArray(p.images) && p.images.length) return p.images.filter(Boolean);
+  if(p.imageUrl) return [p.imageUrl];
+  return [];
+}
+async function uploadImageFor(base, file, slot){
+  // slot: 0-based position (0 = primary). Omit to append as a new photo.
   try{
-    if(previewSel) $(previewSel).innerHTML='<div class="spinner"></div>';
     const blob=await compress(file);
-    const ref=storage.ref().child('catalog/'+base+'.jpg');
+    const path='catalog/'+base+(slot?('_'+(slot+1)):'')+'.jpg';
+    const ref=storage.ref().child(path);
     await ref.put(blob,{contentType:'image/jpeg'});
     const url=await ref.getDownloadURL();
-    await db.collection(COL).doc(base).set({imageUrl:url},{merge:true});
-    if(previewSel) $(previewSel).innerHTML=`<img src="${esc(url)}">`;
-    cachedProducts=null;
-    const p=adminProducts.find(x=>x.id===base); if(p) p.imageUrl=url;
-    return url;
-  }catch(e){ console.error(e); toast('Upload failed: '+e.message,true); if(previewSel) $(previewSel).innerHTML='<div class="ph"><span>Upload failed</span></div>'; }
+    const snap=await db.collection(COL).doc(base).get();
+    const cur=imagesOf(snap.exists?snap.data():null);
+    const arr=cur.slice();
+    const at = (slot==null) ? arr.length : slot;
+    while(arr.length<at) arr.push('');
+    arr[at]=url;
+    const clean=arr.filter(Boolean);
+    await db.collection(COL).doc(base).set({images:clean, imageUrl:clean[0]},{merge:true});
+    invalidateClientCache();
+    const p=adminProducts.find(x=>x.id===base); if(p){ p.images=clean; p.imageUrl=clean[0]; }
+    return {url, images:clean};
+  }catch(e){ console.error(e); toast('Upload failed: '+e.message,true); return null; }
+}
+async function removeImageAt(base, idx){
+  try{
+    const snap=await db.collection(COL).doc(base).get();
+    const arr=imagesOf(snap.exists?snap.data():null).slice();
+    arr.splice(idx,1);
+    await db.collection(COL).doc(base).set({images:arr, imageUrl:arr[0]||firebase.firestore.FieldValue.delete()},{merge:true});
+    invalidateClientCache();
+    const p=adminProducts.find(x=>x.id===base); if(p){ p.images=arr; p.imageUrl=arr[0]||''; }
+    toast('Photo removed');
+  }catch(e){ console.error(e); toast('Remove failed: '+e.message,true); }
+}
+function matchImageFilename(filename, idSet){
+  const stem=filename.replace(/\.[^.]+$/,'').trim();
+  if(idSet.has(stem)) return {id:stem, slot:0};
+  const m=stem.match(/^(.*?)[_\-\s](\d{1,2})$/);
+  if(m && idSet.has(m[1])){ const n=parseInt(m[2],10); if(n>=1 && n<=9) return {id:m[1], slot:n-1}; }
+  return null;
 }
 function bindBatchImages(){
   const drop=$('#imgDrop'), inp=$('#imgFiles');
@@ -762,9 +874,9 @@ async function batchImages(files){
   const rep=$('#imgReport'); let ok=0, miss=[], fail=0;
   rep.innerHTML='<div class="progress"><i id="ibar"></i></div><div id="itext" class="sub" style="margin:6px 0 0"></div>';
   for(let i=0;i<files.length;i++){
-    const f=files[i]; const base=f.name.replace(/\.[^.]+$/,'').trim();
-    if(!ids.has(base)){ miss.push(f.name); }
-    else { const u=await uploadImageFor(base,f); u?ok++:fail++; }
+    const f=files[i]; const match=matchImageFilename(f.name, ids);
+    if(!match){ miss.push(f.name); }
+    else { const u=await uploadImageFor(match.id, f, match.slot); u?ok++:fail++; }
     $('#ibar').style.width=Math.round((i+1)/files.length*100)+'%';
     $('#itext').textContent=`${i+1} / ${files.length} processed`;
   }
@@ -772,8 +884,8 @@ async function batchImages(files){
     <div class="stat new"><div class="num">${ok}</div><div class="lbl">Uploaded &amp; linked</div></div>
     <div class="stat oos"><div class="num">${miss.length}</div><div class="lbl">No matching code</div></div>
     <div class="stat iss"><div class="num">${fail}</div><div class="lbl">Failed</div></div>
-  </div>${miss.length?`<div class="sub">Unmatched filenames (rename to the product code): ${miss.map(esc).join(', ')}</div>`:''}`;
-  toast(ok+' photos linked'); loadAdminData();
+  </div>${miss.length?`<div class="sub">Unmatched filenames (name as CODE.jpg for photo 1, CODE_2.jpg for photo 2, etc): ${miss.map(esc).join(', ')}</div>`:''}`;
+  toast(ok+' photos linked — publishing…'); await loadAdminData(); await regenerateSnapshot(true); toast(ok+' photos linked and published');
 }
 
 /* =====================================================================
@@ -795,18 +907,31 @@ function renderIssuesFromDB(){
    CLIENT — load in-stock, cache, search / sort / filter
    ===================================================================== */
 let cachedProducts=null, previewMode=false;
-const CACHE_KEY='sr_catalog_cache', CACHE_TTL=30*60*1000;
+const CACHE_KEY='sr_catalog_cache_v2', CACHE_TTL=6*60*60*1000; // 6h — data only changes via daily import + admin edits, both of which invalidate immediately below
+function invalidateClientCache(){ cachedProducts=null; try{ localStorage.removeItem(CACHE_KEY); }catch(e){} }
 async function loadClient(){
   const box=$('#clientResults');
-  try{ const c=JSON.parse(sessionStorage.getItem(CACHE_KEY)||'null'); if(c && Date.now()-c.t<CACHE_TTL){ cachedProducts=c.d; } }catch(e){}
+  if(!cachedProducts){
+    try{ const c=JSON.parse(localStorage.getItem(CACHE_KEY)||'null'); if(c && Date.now()-c.t<CACHE_TTL){ cachedProducts=c.d; } }catch(e){}
+  }
   if(!cachedProducts){
     const configured = fbReady && !String(CONFIG.firebase.apiKey).startsWith('PASTE');
     if(configured){
       try{
-        const snap=await db.collection(COL).where('inStock','==',true).get();
-        cachedProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
-        sessionStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
-      }catch(e){ console.error(e); cachedProducts=SAMPLE.slice(); previewMode=true; }
+        // Preferred path: one small published JSON file — zero Firestore reads per visit.
+        const url=await storage.ref('public/catalog.json').getDownloadURL();
+        const res=await fetch(url);
+        if(!res.ok) throw new Error('snapshot not found');
+        cachedProducts=await res.json();
+        localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
+      }catch(snapErr){
+        // Fallback: nothing published yet (first run before any import/publish) — direct Firestore query.
+        try{
+          const snap=await db.collection(COL).where('inStock','==',true).get();
+          cachedProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
+          localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
+        }catch(e){ console.error(e); cachedProducts=SAMPLE.slice(); previewMode=true; }
+      }
     } else { cachedProducts=SAMPLE.slice(); previewMode=true; }
   }
   renderActiveFilters(); renderClient();
@@ -919,7 +1044,7 @@ function renderClient(){
 function cardHTML(p){
   const sizes=(p.sizes||[]).filter(s=>s.stock>0).slice(0,7);
   const priceTxt=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):`${money(p.priceMin)} <small>–</small> ${money(p.priceMax)}`) : '—';
-  const img=p.imageUrl?`<img src="${esc(p.imageUrl)}" loading="lazy" alt="${esc(nameOf(p))}">`
+  const img=imagesOf(p)[0]?`<img src="${esc(imagesOf(p)[0])}" loading="lazy" alt="${esc(nameOf(p))}">`
     :`<div class="ph"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 16c2-1 4-1 5 0 2 1 3 1 5 0l8-3c1-.4 2 .2 2 1.3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M4 16V9a2 2 0 0 1 2-2h3l2 3"/></svg><span>Photo coming soon</span></div>`;
   return `<div class="card" data-id="${esc(p.id)}">
     <div class="thumb">${img}${p.mapped?'':''}</div>
@@ -932,8 +1057,7 @@ function cardHTML(p){
 }
 function openDetail(id){
   const p=cachedProducts.find(x=>x.id===id); if(!p) return;
-  const img=p.imageUrl?`<img src="${esc(p.imageUrl)}" alt="${esc(nameOf(p))}">`
-    :`<div class="ph"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 16c2-1 4-1 5 0 2 1 3 1 5 0l8-3c1-.4 2 .2 2 1.3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M4 16V9a2 2 0 0 1 2-2h3l2 3"/></svg><span>Photo coming soon</span></div>`;
+  const imgs=imagesOf(p);
   const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+' – '+money(p.priceMax)):'—';
   const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${s.stock} left</div></div>`).join('');
   let wa='';
@@ -944,7 +1068,8 @@ function openDetail(id){
   openSheet(`
     <div class="sheet-head"><h2>${esc(nameOf(p))}</h2><button class="x" onclick="closeSheet()">×</button></div>
     <div class="sheet-body">
-      <div class="detail-img">${img}</div>
+      <div class="detail-img" id="detailImgWrap"></div>
+      ${imgs.length>1?`<div class="thumb-row" id="detailThumbRow"></div>`:''}
       ${brandOf(p)?`<div class="card-brand" style="margin-bottom:6px">${esc(brandOf(p))}</div>`:''}
       <div style="font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px">${price}</div>
       ${catOf(p)?`<div class="kv"><b>Type</b><span>${esc(catOf(p))}${genderOf(p)?' · '+esc(genderOf(p)):''}</span></div>`:''}
@@ -954,6 +1079,26 @@ function openDetail(id){
       <div class="size-grid">${grid||'<span class="sub">—</span>'}</div>
       ${wa}
     </div>`);
+  let idx=0;
+  function renderGallery(){
+    const wrap=$('#detailImgWrap'); if(!wrap) return;
+    if(!imgs.length){
+      wrap.innerHTML=`<div class="ph"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 16c2-1 4-1 5 0 2 1 3 1 5 0l8-3c1-.4 2 .2 2 1.3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M4 16V9a2 2 0 0 1 2-2h3l2 3"/></svg><span>Photo coming soon</span></div>`;
+      return;
+    }
+    wrap.innerHTML=`<img src="${esc(imgs[idx])}" alt="${esc(nameOf(p))}">`
+      +(imgs.length>1?`<button class="gal-arrow left" id="galPrev">‹</button><button class="gal-arrow right" id="galNext">›</button>`:'');
+    if(imgs.length>1){
+      $('#galPrev').onclick=()=>{ idx=(idx-1+imgs.length)%imgs.length; renderGallery(); };
+      $('#galNext').onclick=()=>{ idx=(idx+1)%imgs.length; renderGallery(); };
+      const row=$('#detailThumbRow');
+      if(row){
+        row.innerHTML=imgs.map((u,i)=>`<img class="thumb-mini ${i===idx?'on':''}" data-i="${i}" src="${esc(u)}">`).join('');
+        $$('#detailThumbRow .thumb-mini').forEach(t=>t.onclick=()=>{ idx=parseInt(t.dataset.i,10); renderGallery(); });
+      }
+    }
+  }
+  renderGallery();
 }
 
 /* =====================================================================
@@ -965,7 +1110,7 @@ $('#overlay').onclick=e=>{ if(e.target.id==='overlay') closeSheet(); };
 
 function showClient(){ $('#clientView').classList.remove('hidden'); $('#adminView').classList.add('hidden'); $('#navClient').style.color='var(--ink)'; $('#navAdmin').style.color=''; }
 function showAdmin(){ $('#adminView').classList.remove('hidden'); $('#clientView').classList.add('hidden'); $('#navAdmin').style.color='var(--ink)'; $('#navClient').style.color=''; }
-$('#navClient').onclick=showClient;
+$('#navClient').onclick=()=>{ showClient(); loadClient(); };
 $('#navAdmin').onclick=showAdmin;
 
 // admin gate
@@ -994,7 +1139,7 @@ $('#mFilterStatus') && ($('#mFilterStatus').onchange=renderMapList);
 $('#mSort') && ($('#mSort').onchange=renderMapList);
 
 // boot
-bindImport(); bindBulk(); bindBatchImages();
+bindImport(); bindBulk(); bindBatchImages(); updatePublishUI();
 if(sessionStorage.getItem('sr_admin')==='1'){ loadAdminData().then(renderIssuesFromDB); }
 loadClient();
 
