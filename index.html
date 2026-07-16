@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.2.7"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.3.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -235,6 +235,29 @@ select.control:focus{border-color:var(--accent)}
   h1.page{font-size:22px}
   .two{grid-template-columns:1fr}
   .drawer{width:100vw}
+
+  /* Client search/sort/filter row: search gets its own full-width row,
+     sort + filter share the row below instead of all three squeezing together. */
+  .controls .search{flex-basis:100%}
+
+  /* Admin → Products search/status/sort row: same full-width-search treatment. */
+  #pane-map .controls .search{flex-basis:100%}
+
+  /* Mapping list rows: checkbox+thumb+name get their own row; tags+Edit button
+     wrap to the row below instead of everything being squeezed into one line. */
+  .mrow{flex-wrap:wrap; row-gap:8px}
+  .mrow .tag.mapped, .mrow .tag.raw{flex-basis:100%}
+  .mrow .openMap{margin-left:auto}
+
+  /* Bulk-edit bar: let its contents wrap instead of overflowing on narrow screens. */
+  #bulkBar{flex-wrap:wrap; row-gap:8px}
+
+  .sheet-body{padding:16px}
+  .sheet-head{padding:14px 16px}
+}
+@media (max-width:380px){
+  .grid{grid-template-columns:repeat(auto-fill,minmax(135px,1fr))}
+  .stat{min-width:100%}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none !important; animation:none !important}}
 </style>
