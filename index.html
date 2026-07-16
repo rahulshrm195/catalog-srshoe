@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.2.6"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.2.7"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -723,7 +723,7 @@ function openMapEditor(id){
     <div class="sheet-body">
       <div class="mimg-grid" id="mimgGrid">${cells}</div>
       ${imgs.length>1?`<button class="btn sm ghost danger" id="clearAllPhotos" style="margin:-10px 0 18px">Clear all ${imgs.length} photos</button>`:''}
-      <input type="file" id="mapImgFile" accept="image/*" capture="environment" multiple class="hidden">
+      <input type="file" id="mapImgFile" accept="image/*" multiple class="hidden">
       <div class="raw-box">
         <div class="rline"><b>From file</b><span>${esc(p.rawName||'—')}</span></div>
         <div class="rline"><b>Code</b><span>${esc(p.id)}</span></div>
