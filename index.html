@@ -464,6 +464,7 @@ function autoGender(group,sub){
   if(/\bmens?\b|gents|^g_/.test(s)) return 'Men';
   return '';
 }
+     // more categories to be added to this function Slipper, Rainy Shoes, Full Cover Shoes, Trekking Shoes, Polish
 function autoCategory(group){
   const g=String(group||'').toLowerCase();
   const map=[['chappal','Chappals'],['sport','Sports Shoes'],['sandal','Sandals'],['sandle','Sandals'],['formal','Formal'],['slider','Sliders'],['slid','Sliders'],['crock','Crocs'],['crock','Crocs'],['loafer','Loafers'],['belly','Belly'],['sneaker','Sneakers'],['sock','Socks'],['school','School Shoes'],['clog','Clogs'],['fancy','Fancy'],['moccas','Moccasins'],['belt','Belts'],['wallet','Wallets']];
