@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.4.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -564,7 +564,7 @@ async function handleFile(f){
     prev.innerHTML='<div class="state"><div class="spinner"></div>Comparing against your catalog…</div>';
     // fetch existing base codes + inStock
     const snap=await db.collection(COL).get();
-    const existing=new Map(); snap.forEach(d=>existing.set(d.id,d.data()));
+    const existing=new Map(); snap.forEach(d=>{ if(!isSnapshotDoc(d.id)) existing.set(d.id,d.data()); });
     const parsedBases=new Set(parsed.map(p=>p.base));
     let nNew=0,nUpd=0;
     parsed.forEach(p=> existing.has(p.base)?nUpd++:nNew++);
@@ -636,7 +636,7 @@ async function applyImport(){
 let adminProducts=[];
 async function loadAdminData(){
   const snap=await db.collection(COL).get();
-  adminProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
+  adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
   const mapped=adminProducts.filter(p=>p.mapped).length;
   const noimg=adminProducts.filter(p=>p.inStock && !imagesOf(p).length).length;
   $('#adminSub').textContent=`${adminProducts.length} products · ${mapped} mapped · ${adminProducts.filter(p=>p.inStock).length} in stock · ${noimg} in-stock without a photo`;
@@ -645,15 +645,26 @@ async function loadAdminData(){
 }
 
 /* =====================================================================
-   PUBLISH — the customer catalog is served from one small Storage file
-   (public/catalog.json), not a live Firestore query. This is what keeps
-   Firebase reads near-zero no matter how many customers browse: they
-   fetch one JSON file (billed as cheap Storage bandwidth) instead of
-   ~2,000 Firestore document reads per visit. Big operations (daily
+   PUBLISH — the customer catalog is served from a snapshot: the whole
+   in-stock list saved as JSON text in a few "__snapshot_N" docs inside
+   the products collection, not a live query. A visit costs ~3 reads
+   instead of ~1,600. (It lives in the products collection because the
+   Firestore rules only allow that collection.) Big operations (daily
    import, batch photo upload) publish automatically. Small one-by-one
    edits (mapping a single product, adding one photo) just mark the
    catalog "dirty" — you publish whenever you're ready via the button.
    ===================================================================== */
+const SNAP_PREFIX='__snapshot_', SNAP_CHUNK=300000; // chars; ≤3 bytes each keeps a doc under 1 MiB
+const isSnapshotDoc = id => String(id).startsWith(SNAP_PREFIX);
+async function readSnapshot(){
+  const first=await db.collection(COL).doc(SNAP_PREFIX+0).get();
+  if(!first.exists) throw new Error('no snapshot published yet');
+  const {of,t}=first.data(), docs=[first];
+  for(let i=1;i<of;i++) docs.push(db.collection(COL).doc(SNAP_PREFIX+i).get());
+  const all=await Promise.all(docs);
+  if(all.some(d=>!d.exists || d.data().t!==t)) throw new Error('snapshot changed while loading');
+  return JSON.parse(all.map(d=>d.data().data).join(''));
+}
 let pendingPublish=0, lastPublished=(()=>{ try{return Number(localStorage.getItem('sr_last_published'))||null;}catch(e){return null;} })();
 function markDirty(){ pendingPublish++; updatePublishUI(); }
 function updatePublishUI(){
@@ -678,9 +689,14 @@ async function regenerateSnapshot(silent){
         images:imagesOf(p), mapped:!!p.mapped,
         sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>({label:s.label,stock:s.stock})) };
     });
-    const blob=new Blob([JSON.stringify(list)],{type:'application/json'});
-    const ref=storage.ref().child('public/catalog.json');
-    await ref.put(blob,{contentType:'application/json',cacheControl:'public, max-age=120'});
+    // Split into chunks well under Firestore's 1 MiB doc limit, written in one atomic batch.
+    const json=JSON.stringify(list), parts=[];
+    for(let i=0;i<json.length;i+=SNAP_CHUNK) parts.push(json.slice(i,i+SNAP_CHUNK));
+    const prev=await db.collection(COL).doc(SNAP_PREFIX+0).get();
+    const prevN=prev.exists?(prev.data().of||0):0, t=Date.now(), batch=db.batch();
+    parts.forEach((data,i)=>batch.set(db.collection(COL).doc(SNAP_PREFIX+i),{snapshot:true,part:i,of:parts.length,t,data}));
+    for(let i=parts.length;i<prevN;i++) batch.delete(db.collection(COL).doc(SNAP_PREFIX+i));
+    await batch.commit();
     lastPublished=Date.now(); pendingPublish=0; updatePublishUI();
     try{ localStorage.setItem('sr_last_published', String(lastPublished)); }catch(e){}
     invalidateClientCache();
@@ -977,11 +993,8 @@ async function loadClient(){
     const configured = fbReady && !String(CONFIG.firebase.apiKey).startsWith('PASTE');
     if(configured){
       try{
-        // Preferred path: one small published JSON file — zero Firestore reads per visit.
-        const url=await storage.ref('public/catalog.json').getDownloadURL();
-        const res=await fetch(url);
-        if(!res.ok) throw new Error('snapshot not found');
-        cachedProducts=await res.json();
+        // Preferred path: the published snapshot — a few reads per visit.
+        cachedProducts=await readSnapshot();
         localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
       }catch(snapErr){
         // Fallback: nothing published yet (first run before any import/publish) — direct Firestore query.
