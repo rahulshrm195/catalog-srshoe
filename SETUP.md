@@ -18,3 +18,11 @@ reading every product straight from Firestore (slow, and ~1,600 reads per visit)
 
 3. Open the catalog, then in the browser's developer console there should be no
    "blocked by CORS policy" error.
+
+## 2. Make existing photos load from the phone's cache
+
+Photos uploaded before v1.4.0 were stored with "don't cache", so phones re-download
+every photo on every visit. New uploads are cached automatically. To fix the old ones:
+
+Admin → **Images** tab → **Speed up photo loading**. It goes through every photo once
+(about a minute for ~1,000 photos) and is safe to run again.

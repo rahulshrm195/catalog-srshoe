@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.3.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.4.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -384,6 +384,10 @@ select.control:focus{border-color:var(--accent)}
         <div style="font-size:12px; margin-top:6px">Filenames must match product codes. Images are compressed before upload.</div>
       </div>
       <div id="imgReport" style="margin-top:18px"></div>
+      <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--line)">
+        <button class="btn sm" id="fixCacheBtn">Speed up photo loading</button>
+        <span id="fixCacheText" class="sub" style="margin-left:8px">One-time fix for photos uploaded before v1.4.0. Safe to run again.</span>
+      </div>
     </div>
 
     <!-- ISSUES -->
@@ -855,6 +859,26 @@ function imagesOf(p){
   if(p.imageUrl) return [p.imageUrl];
   return [];
 }
+const PHOTO_CACHE='public, max-age=31536000';
+// One-off: photos uploaded before v1.4.0 were stored with no caching, so phones re-downloaded them every visit.
+async function fixPhotoCaching(){
+  const btn=$('#fixCacheBtn'), out=$('#fixCacheText');
+  btn.disabled=true;
+  try{
+    const {items}=await storage.ref('catalog').listAll();
+    let done=0, fixed=0;
+    for(let i=0;i<items.length;i+=10){
+      await Promise.all(items.slice(i,i+10).map(async r=>{
+        const m=await r.getMetadata();
+        if(m.cacheControl!==PHOTO_CACHE){ await r.updateMetadata({cacheControl:PHOTO_CACHE}); fixed++; }
+        done++;
+      }));
+      out.textContent=`Checked ${done}/${items.length} photos…`;
+    }
+    out.textContent=`Done — ${fixed} of ${items.length} photos updated.`;
+  }catch(e){ console.error(e); out.textContent='Stopped: '+e.message; }
+  btn.disabled=false;
+}
 async function uploadImageFor(base, file, slot){
   // slot: 0-based position (0 = primary). Omit to append as a new photo.
   try{
@@ -865,8 +889,9 @@ async function uploadImageFor(base, file, slot){
     const at = (slot==null) ? arr.length : slot;   // resolve real position FIRST
     const path='catalog/'+base+(at?('_'+(at+1)):'')+'.jpg';  // then derive a path unique to that position
     const ref=storage.ref().child(path);
-    await ref.put(blob,{contentType:'image/jpeg'});
-    const url=await ref.getDownloadURL();
+    await ref.put(blob,{contentType:'image/jpeg',cacheControl:PHOTO_CACHE});
+    // Long browser caching is safe because a replaced photo gets a new URL via &v=.
+    const url=(await ref.getDownloadURL())+'&v='+Date.now();
     while(arr.length<at) arr.push('');
     arr[at]=url;
     const clean=arr.filter(Boolean);
@@ -1303,6 +1328,7 @@ $('#mSort') && ($('#mSort').onchange=renderMapList);
 
 // boot
 bindImport(); bindBulk(); bindBatchImages(); updatePublishUI();
+$('#fixCacheBtn').onclick=fixPhotoCaching;
 if(sessionStorage.getItem('sr_admin')==='1'){ loadAdminData().then(renderIssuesFromDB); }
 loadClient();
 
