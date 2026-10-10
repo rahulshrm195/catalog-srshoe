@@ -285,6 +285,7 @@ select.control:focus{border-color:var(--accent)}
       <input id="q" placeholder="Search name, brand, colour or code…" />
     </div>
     <select class="control" id="sortBy">
+      <option value="featured">Featured</option>
       <option value="name">Name A–Z</option>
       <option value="price_asc">Price: low to high</option>
       <option value="price_desc">Price: high to low</option>
@@ -1066,13 +1067,41 @@ function renderClient(){
     if(sort==='price_asc') return (a.priceMin||0)-(b.priceMin||0);
     if(sort==='price_desc') return (b.priceMin||0)-(a.priceMin||0);
     if(sort==='new') return String(b.id).localeCompare(String(a.id));
+    if(sort==='featured') return featuredScore(b)-featuredScore(a) || nameOf(a).localeCompare(nameOf(b));
     return nameOf(a).localeCompare(nameOf(b));
   });
   $('#clientSub').textContent=`${cachedProducts.length} products in stock`;
   const banner = previewMode ? '<div class="preview-banner">◆ Preview data — connect your Firebase config to load the real SR Shoes catalog.</div>' : '';
-  $('#clientResults').innerHTML = banner + (list.length ? `<div class="count" style="margin-bottom:10px">${list.length} shown</div><div class="grid">`+list.map(cardHTML).join('')+'</div>'
+  clientList=list; clientShown=Math.min(PAGE_SIZE,list.length);
+  $('#clientResults').innerHTML = banner + (list.length ? `<div class="count" style="margin-bottom:10px">${list.length} products</div><div class="grid" id="clientGrid"></div><div id="clientMore" style="text-align:center;margin-top:16px"></div>`
     : '<div class="state"><h3>Nothing matches</h3>Try clearing a filter or searching a different term.</div>');
-  $$('.card').forEach(c=>c.onclick=()=>openDetail(c.dataset.id));
+  if(list.length) appendCards(0);
+}
+// Products with a photo and a proper name first, so the first screen looks finished.
+function featuredScore(p){ return (imagesOf(p).length?2:0) + (p.displayName?1:0); }
+
+/* Render the grid a page at a time — 1,500+ cards at once is heavy on phones. */
+const PAGE_SIZE=48;
+let clientList=[], clientShown=0, moreObserver=null;
+function appendCards(from){
+  const grid=$('#clientGrid'); if(!grid) return;
+  grid.insertAdjacentHTML('beforeend', clientList.slice(from,clientShown).map(cardHTML).join(''));
+  [...grid.children].slice(from).forEach(c=>c.onclick=()=>openDetail(c.dataset.id));
+  const more=$('#clientMore'), left=clientList.length-clientShown;
+  if(moreObserver){ moreObserver.disconnect(); moreObserver=null; }
+  if(left<=0){ more.innerHTML=''; return; }
+  more.innerHTML=`<button class="btn" id="clientMoreBtn">Show more (${left} left)</button>`;
+  $('#clientMoreBtn').onclick=showMoreCards;
+  // Load the next page automatically as the button scrolls into view.
+  if('IntersectionObserver' in window){
+    moreObserver=new IntersectionObserver(es=>{ if(es.some(e=>e.isIntersecting)) showMoreCards(); },{rootMargin:'600px'});
+    moreObserver.observe(more);
+  }
+}
+function showMoreCards(){
+  const from=clientShown;
+  clientShown=Math.min(clientShown+PAGE_SIZE, clientList.length);
+  if(clientShown>from) appendCards(from);
 }
 function cardHTML(p){
   const sizes=(p.sizes||[]).filter(s=>s.stock>0).slice(0,7);
