@@ -713,7 +713,7 @@ function renderMapList(){
       <div class="mthumb">${img}</div>
       <div class="minfo">
         <div class="mname">${esc(p.displayName||p.rawName||p.id)}</div>
-        <div class="mmeta">${esc(p.id)} · ${price} · ${p.totalStock||0} in stock · ${(p.sizes||[]).length} sizes</div>
+        <div class="mmeta">${esc(p.id)} · ${price} · ${Number(p.totalStock)||0} in stock · ${(p.sizes||[]).length} sizes</div>
       </div>
       <span class="tag ${p.mapped?'mapped':'raw'}">${p.mapped?'Mapped':'Raw'}</span>
       ${imgs.length?(imgs.length>1?`<span class="tag mapped">${imgs.length} photos</span>`:''):'<span class="tag noimg">No photo</span>'}
@@ -1092,7 +1092,7 @@ function openDetail(id){
   const p=cachedProducts.find(x=>x.id===id); if(!p) return;
   const imgs=imagesOf(p);
   const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+' – '+money(p.priceMax)):'—';
-  const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${s.stock} left</div></div>`).join('');
+  const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${Number(s.stock)||0} left</div></div>`).join('');
   let wa='';
   if(CONFIG.whatsapp.enabled){
     const msg=encodeURIComponent(`Hi, I'm interested in: ${nameOf(p)} (${p.id})`);
