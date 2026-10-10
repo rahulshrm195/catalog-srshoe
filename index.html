@@ -987,11 +987,45 @@ const SAMPLE=[
   {id:'N6912',displayName:'Aerowalk AT94 Brown',brand:'Aerowalk',gender:'Women',category:'Sandals',color:'Brown',priceMin:689,priceMax:689,mapped:true,inStock:true,sizes:[{label:'37',num:37,stock:2},{label:'38',num:38,stock:2},{label:'39',num:39,stock:2},{label:'40',num:40,stock:1}]}
 ];
 const cf={ brand:'', gender:'', category:'', size:'', color:'', pmin:'', pmax:'' };
-function nameOf(p){ return p.displayName||p.rawName||p.id; }
-function brandOf(p){ return p.brand||p.autoBrand||''; }
+function nameOf(p){ return tidyName(p.displayName||p.rawName||p.id); }
+function brandOf(p){ return tidyCase(p.brand||p.autoBrand||''); }
 function genderOf(p){ return p.gender||p.autoGender||''; }
 function catOf(p){ return p.category||p.autoCategory||''; }
-function colorOf(p){ return p.color||p.colorHint||''; }
+function colorOf(p){ return tidyColor(p.color||p.colorHint||''); }
+
+/* ---------- Display clean-up (customer view only; stored data is untouched) ---------- */
+// Supplier colour codes seen in stock names, e.g. "G_PRO_51 BK (LANCER)".
+const COLOR_CODES={BK:'Black',BLK:'Black',GY:'Grey',BR:'Brown',WH:'White',WHT:'White',BL:'Blue',RD:'Red',OL:'Olive',
+  PH:'Peach',TN:'Tan',BE:'Beige',GD:'Gold',NV:'Navy',NY:'Navy',NBL:'Navy Blue',PK:'Pink',YL:'Yellow',OR:'Orange',
+  SL:'Silver',MR:'Maroon',CR:'Cream',MV:'Mauve'};
+const COLOR_PREFIX={D:'Dark',L:'Light'};
+const tidyMemo=new Map();
+function memo(kind,v,fn){ const k=kind+'|'+v; if(!tidyMemo.has(k)) tidyMemo.set(k,fn(v)); return tidyMemo.get(k); }
+// "PARAGON" / "Paragon" → "Paragon"; short all-caps words (VKC, PU) stay as they are.
+function tidyCase(v){ return memo('c',v,v=>String(v).trim().replace(/\s+/g,' ').split(' ')
+  .map(w=>(w.length<=3 && w===w.toUpperCase()) ? w : w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ')); }
+// "WH_GY" → "White / Grey", "D_GY_BK" → "Dark Grey / Black"; unknown codes are kept as-is.
+function decodeColors(code){
+  const out=[]; let pre='';
+  for(const t of code.split('_').filter(Boolean)){
+    if(COLOR_PREFIX[t]){ pre=COLOR_PREFIX[t]+' '; continue; }
+    out.push(pre+(COLOR_CODES[t]||t)); pre='';
+  }
+  return out.join(' / ');
+}
+function tidyColor(v){ return memo('k',v,v=>{
+  v=String(v).trim(); if(!v) return '';
+  const code=v.toUpperCase();
+  if(/^[A-Z_]+$/.test(code) && code.split('_').every(t=>COLOR_CODES[t]||COLOR_PREFIX[t])) return decodeColors(code);
+  return tidyCase(v.replace(/_/g,' ').replace(/^N\.\s*blue$/i,'Navy Blue').replace(/^D\.\s*/i,'Dark ').replace(/^L\.\s*/i,'Light '));
+}); }
+// "ADVENTURE_60 D_GY_BK (ASIAN)" → "Adventure 60 Dark Grey / Black" (brand is shown separately).
+function tidyName(v){ return memo('n',v,v=>{
+  v=String(v).trim();
+  const m=v.match(/^(\S+)\s+([A-Za-z_]+)\s*\([^)]*\)$/);
+  if(m) return tidyCase(m[1].replace(/_/g,' '))+' '+decodeColors(m[2].toUpperCase());
+  return v.replace(/_/g,' ');
+}); }
 
 function activeCount(){ return ['brand','gender','category','size','color'].filter(k=>cf[k]).length + ((cf.pmin||cf.pmax)?1:0); }
 function renderActiveFilters(){
@@ -1135,7 +1169,7 @@ function openDetail(id){
       ${brandOf(p)?`<div class="card-brand" style="margin-bottom:6px">${esc(brandOf(p))}</div>`:''}
       <div style="font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px">${price}</div>
       ${catOf(p)?`<div class="kv"><b>Type</b><span>${esc(catOf(p))}${genderOf(p)?' · '+esc(genderOf(p)):''}</span></div>`:''}
-      ${p.color?`<div class="kv"><b>Colour</b><span>${esc(p.color)}</span></div>`:''}
+      ${colorOf(p)?`<div class="kv"><b>Colour</b><span>${esc(colorOf(p))}</span></div>`:''}
       <div class="kv"><b>Code</b><span>${esc(p.id)}</span></div>
       <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 4px">Available sizes</div>
       <div class="size-grid">${grid||'<span class="sub">—</span>'}</div>
