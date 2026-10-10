@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.5.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -329,7 +329,7 @@ select.control:focus{border-color:var(--accent)}
         <button class="tab" data-tab="images">Photos</button>
         <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
       </div>
-      <button class="btn primary hidden" id="publishBtn">Publish <span id="publishN"></span> to catalog</button>
+      <button class="btn" id="publishBtn">Publish<span id="publishN"></span> to catalog</button>
       <span class="sub" id="publishedStamp" style="margin:0"></span>
     </div>
 
@@ -637,6 +637,9 @@ let adminProducts=[];
 async function loadAdminData(){
   const snap=await db.collection(COL).get();
   adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
+  // Real publish time comes from the snapshot itself, not this browser's memory.
+  const s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0);
+  lastPublished = s0 ? s0.data().t : null; updatePublishUI();
   const mapped=adminProducts.filter(p=>p.mapped).length;
   const noimg=adminProducts.filter(p=>p.inStock && !imagesOf(p).length).length;
   $('#adminSub').textContent=`${adminProducts.length} products · ${mapped} mapped · ${adminProducts.filter(p=>p.inStock).length} in stock · ${noimg} in-stock without a photo`;
@@ -665,13 +668,15 @@ async function readSnapshot(){
   if(all.some(d=>!d.exists || d.data().t!==t)) throw new Error('snapshot changed while loading');
   return JSON.parse(all.map(d=>d.data().data).join(''));
 }
-let pendingPublish=0, lastPublished=(()=>{ try{return Number(localStorage.getItem('sr_last_published'))||null;}catch(e){return null;} })();
+let pendingPublish=0, lastPublished; // undefined until admin data loads; null = never published
 function markDirty(){ pendingPublish++; updatePublishUI(); }
 function updatePublishUI(){
   const b=$('#publishBtn');
-  if(pendingPublish>0){ b.classList.remove('hidden'); $('#publishN').textContent=pendingPublish; }
-  else b.classList.add('hidden');
-  $('#publishedStamp').textContent = lastPublished ? 'Live catalog last published '+timeAgo(lastPublished) : '';
+  // Always available; highlighted when there are edits customers can't see yet.
+  b.classList.toggle('primary', pendingPublish>0 || lastPublished===null);
+  $('#publishN').textContent = pendingPublish>0 ? ' '+pendingPublish+' change'+(pendingPublish>1?'s':'') : '';
+  $('#publishedStamp').textContent = lastPublished ? 'Live catalog last published '+timeAgo(lastPublished)
+    : lastPublished===null ? 'Not published yet — customers see a slower live list' : '';
 }
 function timeAgo(ts){
   const s=Math.floor((Date.now()-ts)/1000);
@@ -698,7 +703,6 @@ async function regenerateSnapshot(silent){
     for(let i=parts.length;i<prevN;i++) batch.delete(db.collection(COL).doc(SNAP_PREFIX+i));
     await batch.commit();
     lastPublished=Date.now(); pendingPublish=0; updatePublishUI();
-    try{ localStorage.setItem('sr_last_published', String(lastPublished)); }catch(e){}
     invalidateClientCache();
     if(!silent) toast('Catalog published — '+list.length+' products live');
     return true;
