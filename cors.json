@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["https://catalog.srshoe.in", "https://rahulshrm195.github.io"],
+    "method": ["GET", "HEAD"],
+    "responseHeader": ["Content-Type", "Cache-Control"],
+    "maxAgeSeconds": 3600
+  }
+]
