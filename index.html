@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.3.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -285,6 +285,7 @@ select.control:focus{border-color:var(--accent)}
       <input id="q" placeholder="Search name, brand, colour or code…" />
     </div>
     <select class="control" id="sortBy">
+      <option value="featured">Featured</option>
       <option value="name">Name A–Z</option>
       <option value="price_asc">Price: low to high</option>
       <option value="price_desc">Price: high to low</option>
@@ -383,6 +384,10 @@ select.control:focus{border-color:var(--accent)}
         <div style="font-size:12px; margin-top:6px">Filenames must match product codes. Images are compressed before upload.</div>
       </div>
       <div id="imgReport" style="margin-top:18px"></div>
+      <div style="margin-top:22px;padding-top:16px;border-top:1px solid var(--line)">
+        <button class="btn sm" id="fixCacheBtn">Speed up photo loading</button>
+        <span id="fixCacheText" class="sub" style="margin-left:8px">One-time fix for photos uploaded before v1.4.0. Safe to run again.</span>
+      </div>
     </div>
 
     <!-- ISSUES -->
@@ -559,7 +564,7 @@ async function handleFile(f){
     prev.innerHTML='<div class="state"><div class="spinner"></div>Comparing against your catalog…</div>';
     // fetch existing base codes + inStock
     const snap=await db.collection(COL).get();
-    const existing=new Map(); snap.forEach(d=>existing.set(d.id,d.data()));
+    const existing=new Map(); snap.forEach(d=>{ if(!isSnapshotDoc(d.id)) existing.set(d.id,d.data()); });
     const parsedBases=new Set(parsed.map(p=>p.base));
     let nNew=0,nUpd=0;
     parsed.forEach(p=> existing.has(p.base)?nUpd++:nNew++);
@@ -631,7 +636,7 @@ async function applyImport(){
 let adminProducts=[];
 async function loadAdminData(){
   const snap=await db.collection(COL).get();
-  adminProducts=snap.docs.map(d=>({id:d.id,...d.data()}));
+  adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
   const mapped=adminProducts.filter(p=>p.mapped).length;
   const noimg=adminProducts.filter(p=>p.inStock && !imagesOf(p).length).length;
   $('#adminSub').textContent=`${adminProducts.length} products · ${mapped} mapped · ${adminProducts.filter(p=>p.inStock).length} in stock · ${noimg} in-stock without a photo`;
@@ -640,15 +645,26 @@ async function loadAdminData(){
 }
 
 /* =====================================================================
-   PUBLISH — the customer catalog is served from one small Storage file
-   (public/catalog.json), not a live Firestore query. This is what keeps
-   Firebase reads near-zero no matter how many customers browse: they
-   fetch one JSON file (billed as cheap Storage bandwidth) instead of
-   ~2,000 Firestore document reads per visit. Big operations (daily
+   PUBLISH — the customer catalog is served from a snapshot: the whole
+   in-stock list saved as JSON text in a few "__snapshot_N" docs inside
+   the products collection, not a live query. A visit costs ~3 reads
+   instead of ~1,600. (It lives in the products collection because the
+   Firestore rules only allow that collection.) Big operations (daily
    import, batch photo upload) publish automatically. Small one-by-one
    edits (mapping a single product, adding one photo) just mark the
    catalog "dirty" — you publish whenever you're ready via the button.
    ===================================================================== */
+const SNAP_PREFIX='__snapshot_', SNAP_CHUNK=300000; // chars; ≤3 bytes each keeps a doc under 1 MiB
+const isSnapshotDoc = id => String(id).startsWith(SNAP_PREFIX);
+async function readSnapshot(){
+  const first=await db.collection(COL).doc(SNAP_PREFIX+0).get();
+  if(!first.exists) throw new Error('no snapshot published yet');
+  const {of,t}=first.data(), docs=[first];
+  for(let i=1;i<of;i++) docs.push(db.collection(COL).doc(SNAP_PREFIX+i).get());
+  const all=await Promise.all(docs);
+  if(all.some(d=>!d.exists || d.data().t!==t)) throw new Error('snapshot changed while loading');
+  return JSON.parse(all.map(d=>d.data().data).join(''));
+}
 let pendingPublish=0, lastPublished=(()=>{ try{return Number(localStorage.getItem('sr_last_published'))||null;}catch(e){return null;} })();
 function markDirty(){ pendingPublish++; updatePublishUI(); }
 function updatePublishUI(){
@@ -673,9 +689,14 @@ async function regenerateSnapshot(silent){
         images:imagesOf(p), mapped:!!p.mapped,
         sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>({label:s.label,stock:s.stock})) };
     });
-    const blob=new Blob([JSON.stringify(list)],{type:'application/json'});
-    const ref=storage.ref().child('public/catalog.json');
-    await ref.put(blob,{contentType:'application/json',cacheControl:'public, max-age=120'});
+    // Split into chunks well under Firestore's 1 MiB doc limit, written in one atomic batch.
+    const json=JSON.stringify(list), parts=[];
+    for(let i=0;i<json.length;i+=SNAP_CHUNK) parts.push(json.slice(i,i+SNAP_CHUNK));
+    const prev=await db.collection(COL).doc(SNAP_PREFIX+0).get();
+    const prevN=prev.exists?(prev.data().of||0):0, t=Date.now(), batch=db.batch();
+    parts.forEach((data,i)=>batch.set(db.collection(COL).doc(SNAP_PREFIX+i),{snapshot:true,part:i,of:parts.length,t,data}));
+    for(let i=parts.length;i<prevN;i++) batch.delete(db.collection(COL).doc(SNAP_PREFIX+i));
+    await batch.commit();
     lastPublished=Date.now(); pendingPublish=0; updatePublishUI();
     try{ localStorage.setItem('sr_last_published', String(lastPublished)); }catch(e){}
     invalidateClientCache();
@@ -713,7 +734,7 @@ function renderMapList(){
       <div class="mthumb">${img}</div>
       <div class="minfo">
         <div class="mname">${esc(p.displayName||p.rawName||p.id)}</div>
-        <div class="mmeta">${esc(p.id)} · ${price} · ${p.totalStock||0} in stock · ${(p.sizes||[]).length} sizes</div>
+        <div class="mmeta">${esc(p.id)} · ${price} · ${Number(p.totalStock)||0} in stock · ${(p.sizes||[]).length} sizes</div>
       </div>
       <span class="tag ${p.mapped?'mapped':'raw'}">${p.mapped?'Mapped':'Raw'}</span>
       ${imgs.length?(imgs.length>1?`<span class="tag mapped">${imgs.length} photos</span>`:''):'<span class="tag noimg">No photo</span>'}
@@ -854,6 +875,26 @@ function imagesOf(p){
   if(p.imageUrl) return [p.imageUrl];
   return [];
 }
+const PHOTO_CACHE='public, max-age=31536000';
+// One-off: photos uploaded before v1.4.0 were stored with no caching, so phones re-downloaded them every visit.
+async function fixPhotoCaching(){
+  const btn=$('#fixCacheBtn'), out=$('#fixCacheText');
+  btn.disabled=true;
+  try{
+    const {items}=await storage.ref('catalog').listAll();
+    let done=0, fixed=0;
+    for(let i=0;i<items.length;i+=10){
+      await Promise.all(items.slice(i,i+10).map(async r=>{
+        const m=await r.getMetadata();
+        if(m.cacheControl!==PHOTO_CACHE){ await r.updateMetadata({cacheControl:PHOTO_CACHE}); fixed++; }
+        done++;
+      }));
+      out.textContent=`Checked ${done}/${items.length} photos…`;
+    }
+    out.textContent=`Done — ${fixed} of ${items.length} photos updated.`;
+  }catch(e){ console.error(e); out.textContent='Stopped: '+e.message; }
+  btn.disabled=false;
+}
 async function uploadImageFor(base, file, slot){
   // slot: 0-based position (0 = primary). Omit to append as a new photo.
   try{
@@ -864,8 +905,9 @@ async function uploadImageFor(base, file, slot){
     const at = (slot==null) ? arr.length : slot;   // resolve real position FIRST
     const path='catalog/'+base+(at?('_'+(at+1)):'')+'.jpg';  // then derive a path unique to that position
     const ref=storage.ref().child(path);
-    await ref.put(blob,{contentType:'image/jpeg'});
-    const url=await ref.getDownloadURL();
+    await ref.put(blob,{contentType:'image/jpeg',cacheControl:PHOTO_CACHE});
+    // Long browser caching is safe because a replaced photo gets a new URL via &v=.
+    const url=(await ref.getDownloadURL())+'&v='+Date.now();
     while(arr.length<at) arr.push('');
     arr[at]=url;
     const clean=arr.filter(Boolean);
@@ -951,11 +993,8 @@ async function loadClient(){
     const configured = fbReady && !String(CONFIG.firebase.apiKey).startsWith('PASTE');
     if(configured){
       try{
-        // Preferred path: one small published JSON file — zero Firestore reads per visit.
-        const url=await storage.ref('public/catalog.json').getDownloadURL();
-        const res=await fetch(url);
-        if(!res.ok) throw new Error('snapshot not found');
-        cachedProducts=await res.json();
+        // Preferred path: the published snapshot — a few reads per visit.
+        cachedProducts=await readSnapshot();
         localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
       }catch(snapErr){
         // Fallback: nothing published yet (first run before any import/publish) — direct Firestore query.
@@ -986,11 +1025,45 @@ const SAMPLE=[
   {id:'N6912',displayName:'Aerowalk AT94 Brown',brand:'Aerowalk',gender:'Women',category:'Sandals',color:'Brown',priceMin:689,priceMax:689,mapped:true,inStock:true,sizes:[{label:'37',num:37,stock:2},{label:'38',num:38,stock:2},{label:'39',num:39,stock:2},{label:'40',num:40,stock:1}]}
 ];
 const cf={ brand:'', gender:'', category:'', size:'', color:'', pmin:'', pmax:'' };
-function nameOf(p){ return p.displayName||p.rawName||p.id; }
-function brandOf(p){ return p.brand||p.autoBrand||''; }
+function nameOf(p){ return tidyName(p.displayName||p.rawName||p.id); }
+function brandOf(p){ return tidyCase(p.brand||p.autoBrand||''); }
 function genderOf(p){ return p.gender||p.autoGender||''; }
 function catOf(p){ return p.category||p.autoCategory||''; }
-function colorOf(p){ return p.color||p.colorHint||''; }
+function colorOf(p){ return tidyColor(p.color||p.colorHint||''); }
+
+/* ---------- Display clean-up (customer view only; stored data is untouched) ---------- */
+// Supplier colour codes seen in stock names, e.g. "G_PRO_51 BK (LANCER)".
+const COLOR_CODES={BK:'Black',BLK:'Black',GY:'Grey',BR:'Brown',WH:'White',WHT:'White',BL:'Blue',RD:'Red',OL:'Olive',
+  PH:'Peach',TN:'Tan',BE:'Beige',GD:'Gold',NV:'Navy',NY:'Navy',NBL:'Navy Blue',PK:'Pink',YL:'Yellow',OR:'Orange',
+  SL:'Silver',MR:'Maroon',CR:'Cream',MV:'Mauve'};
+const COLOR_PREFIX={D:'Dark',L:'Light'};
+const tidyMemo=new Map();
+function memo(kind,v,fn){ const k=kind+'|'+v; if(!tidyMemo.has(k)) tidyMemo.set(k,fn(v)); return tidyMemo.get(k); }
+// "PARAGON" / "Paragon" → "Paragon"; short all-caps words (VKC, PU) stay as they are.
+function tidyCase(v){ return memo('c',v,v=>String(v).trim().replace(/\s+/g,' ').split(' ')
+  .map(w=>(w.length<=3 && w===w.toUpperCase()) ? w : w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ')); }
+// "WH_GY" → "White / Grey", "D_GY_BK" → "Dark Grey / Black"; unknown codes are kept as-is.
+function decodeColors(code){
+  const out=[]; let pre='';
+  for(const t of code.split('_').filter(Boolean)){
+    if(COLOR_PREFIX[t]){ pre=COLOR_PREFIX[t]+' '; continue; }
+    out.push(pre+(COLOR_CODES[t]||t)); pre='';
+  }
+  return out.join(' / ');
+}
+function tidyColor(v){ return memo('k',v,v=>{
+  v=String(v).trim(); if(!v) return '';
+  const code=v.toUpperCase();
+  if(/^[A-Z_]+$/.test(code) && code.split('_').every(t=>COLOR_CODES[t]||COLOR_PREFIX[t])) return decodeColors(code);
+  return tidyCase(v.replace(/_/g,' ').replace(/^N\.\s*blue$/i,'Navy Blue').replace(/^D\.\s*/i,'Dark ').replace(/^L\.\s*/i,'Light '));
+}); }
+// "ADVENTURE_60 D_GY_BK (ASIAN)" → "Adventure 60 Dark Grey / Black" (brand is shown separately).
+function tidyName(v){ return memo('n',v,v=>{
+  v=String(v).trim();
+  const m=v.match(/^(\S+)\s+([A-Za-z_]+)\s*\([^)]*\)$/);
+  if(m) return tidyCase(m[1].replace(/_/g,' '))+' '+decodeColors(m[2].toUpperCase());
+  return v.replace(/_/g,' ');
+}); }
 
 function activeCount(){ return ['brand','gender','category','size','color'].filter(k=>cf[k]).length + ((cf.pmin||cf.pmax)?1:0); }
 function renderActiveFilters(){
@@ -1066,13 +1139,41 @@ function renderClient(){
     if(sort==='price_asc') return (a.priceMin||0)-(b.priceMin||0);
     if(sort==='price_desc') return (b.priceMin||0)-(a.priceMin||0);
     if(sort==='new') return String(b.id).localeCompare(String(a.id));
+    if(sort==='featured') return featuredScore(b)-featuredScore(a) || nameOf(a).localeCompare(nameOf(b));
     return nameOf(a).localeCompare(nameOf(b));
   });
   $('#clientSub').textContent=`${cachedProducts.length} products in stock`;
   const banner = previewMode ? '<div class="preview-banner">◆ Preview data — connect your Firebase config to load the real SR Shoes catalog.</div>' : '';
-  $('#clientResults').innerHTML = banner + (list.length ? `<div class="count" style="margin-bottom:10px">${list.length} shown</div><div class="grid">`+list.map(cardHTML).join('')+'</div>'
+  clientList=list; clientShown=Math.min(PAGE_SIZE,list.length);
+  $('#clientResults').innerHTML = banner + (list.length ? `<div class="count" style="margin-bottom:10px">${list.length} products</div><div class="grid" id="clientGrid"></div><div id="clientMore" style="text-align:center;margin-top:16px"></div>`
     : '<div class="state"><h3>Nothing matches</h3>Try clearing a filter or searching a different term.</div>');
-  $$('.card').forEach(c=>c.onclick=()=>openDetail(c.dataset.id));
+  if(list.length) appendCards(0);
+}
+// Products with a photo and a proper name first, so the first screen looks finished.
+function featuredScore(p){ return (imagesOf(p).length?2:0) + (p.displayName?1:0); }
+
+/* Render the grid a page at a time — 1,500+ cards at once is heavy on phones. */
+const PAGE_SIZE=48;
+let clientList=[], clientShown=0, moreObserver=null;
+function appendCards(from){
+  const grid=$('#clientGrid'); if(!grid) return;
+  grid.insertAdjacentHTML('beforeend', clientList.slice(from,clientShown).map(cardHTML).join(''));
+  [...grid.children].slice(from).forEach(c=>c.onclick=()=>openDetail(c.dataset.id));
+  const more=$('#clientMore'), left=clientList.length-clientShown;
+  if(moreObserver){ moreObserver.disconnect(); moreObserver=null; }
+  if(left<=0){ more.innerHTML=''; return; }
+  more.innerHTML=`<button class="btn" id="clientMoreBtn">Show more (${left} left)</button>`;
+  $('#clientMoreBtn').onclick=showMoreCards;
+  // Load the next page automatically as the button scrolls into view.
+  if('IntersectionObserver' in window){
+    moreObserver=new IntersectionObserver(es=>{ if(es.some(e=>e.isIntersecting)) showMoreCards(); },{rootMargin:'600px'});
+    moreObserver.observe(more);
+  }
+}
+function showMoreCards(){
+  const from=clientShown;
+  clientShown=Math.min(clientShown+PAGE_SIZE, clientList.length);
+  if(clientShown>from) appendCards(from);
 }
 function cardHTML(p){
   const sizes=(p.sizes||[]).filter(s=>s.stock>0).slice(0,7);
@@ -1092,7 +1193,7 @@ function openDetail(id){
   const p=cachedProducts.find(x=>x.id===id); if(!p) return;
   const imgs=imagesOf(p);
   const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+' – '+money(p.priceMax)):'—';
-  const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${s.stock} left</div></div>`).join('');
+  const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${Number(s.stock)||0} left</div></div>`).join('');
   let wa='';
   if(CONFIG.whatsapp.enabled){
     const msg=encodeURIComponent(`Hi, I'm interested in: ${nameOf(p)} (${p.id})`);
@@ -1106,7 +1207,7 @@ function openDetail(id){
       ${brandOf(p)?`<div class="card-brand" style="margin-bottom:6px">${esc(brandOf(p))}</div>`:''}
       <div style="font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px">${price}</div>
       ${catOf(p)?`<div class="kv"><b>Type</b><span>${esc(catOf(p))}${genderOf(p)?' · '+esc(genderOf(p)):''}</span></div>`:''}
-      ${p.color?`<div class="kv"><b>Colour</b><span>${esc(p.color)}</span></div>`:''}
+      ${colorOf(p)?`<div class="kv"><b>Colour</b><span>${esc(colorOf(p))}</span></div>`:''}
       <div class="kv"><b>Code</b><span>${esc(p.id)}</span></div>
       <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 4px">Available sizes</div>
       <div class="size-grid">${grid||'<span class="sub">—</span>'}</div>
@@ -1240,6 +1341,7 @@ $('#mSort') && ($('#mSort').onchange=renderMapList);
 
 // boot
 bindImport(); bindBulk(); bindBatchImages(); updatePublishUI();
+$('#fixCacheBtn').onclick=fixPhotoCaching;
 if(sessionStorage.getItem('sr_admin')==='1'){ loadAdminData().then(renderIssuesFromDB); }
 loadClient();
 
