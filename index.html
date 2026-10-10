@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.5.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.2"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -708,7 +708,12 @@ async function regenerateSnapshot(silent){
     return true;
   }catch(e){ console.error('Publish failed',e); if(!silent) toast('Publish failed: '+e.message,true); return false; }
 }
-$('#publishBtn').onclick=()=>regenerateSnapshot(false);
+$('#publishBtn').onclick=async()=>{
+  const b=$('#publishBtn'), label=b.innerHTML;
+  b.disabled=true; b.textContent='Publishing… (about 30 seconds)';
+  await regenerateSnapshot(false);
+  b.innerHTML=label; b.disabled=false; updatePublishUI();
+};
 
 let mapShown=60, selected=new Set();
 function filteredMapProducts(){
