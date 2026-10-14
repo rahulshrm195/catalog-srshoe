@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.5.5"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.6.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -320,6 +320,7 @@ select.control:focus{border-color:var(--accent)}
     <div class="eyebrow">Admin</div>
     <h1 class="page">Catalog control</h1>
     <p class="sub" id="adminSub">—</p>
+    <p class="sub" style="margin-top:-14px;font-size:12px"><span id="syncNote"></span> · <button class="linkbtn" id="reloadAll" style="padding:2px 4px;font-size:12px">Reload all products</button></p>
     <p class="sub" style="margin-top:-14px;font-family:ui-monospace,monospace;font-size:12px">build v<span id="verStamp"></span></p>
 
     <div class="tabs-row">
@@ -562,9 +563,9 @@ async function handleFile(f){
     const wb=XLSX.read(buf,{type:'array'});
     const parsed=parseWorkbook(wb);
     prev.innerHTML='<div class="state"><div class="spinner"></div>Comparing against your catalog…</div>';
-    // fetch existing base codes + inStock
-    const snap=await db.collection(COL).get();
-    const existing=new Map(); snap.forEach(d=>{ if(!isSnapshotDoc(d.id)) existing.set(d.id,d.data()); });
+    // Bring this device's copy up to date (only changed products are read), then compare against it.
+    await syncAdminData();
+    const existing=new Map(adminProducts.map(({id,...d})=>[id,d]));
     const parsedBases=new Set(parsed.map(p=>p.base));
     let nNew=0,nUpd=0;
     // Only products whose stock-file data changed get written — most rows are identical day to day.
@@ -610,9 +611,9 @@ async function applyImport(){
   parsed.forEach(p=>{
     const {base,...rest}=p; const {colorHint,...fileFields}=rest;
     if(!base) return; // skip any row that produced an empty product code
-    ops.push({ref:db.collection(COL).doc(base), data:{ ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp() }});
+    ops.push({ref:db.collection(COL).doc(base), data:{ ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }});
   });
-  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSeen:firebase.firestore.FieldValue.serverTimestamp() }}));
+  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }}));
   const CH=400; let done=0;
   try{
     for(let i=0;i<ops.length;i+=CH){
@@ -630,7 +631,7 @@ async function applyImport(){
     // `existing` was read moments ago; apply what we just wrote instead of reading ~3,500 products again.
     parsed.forEach(p=>{ const {base,...f}=p; existing.set(base,{...(existing.get(base)||{}),...f}); });
     goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0}));
-    adminProducts=[...existing.entries()].map(([id,d])=>({id,...d})); adminLoaded=true;
+    adminProducts=[...existing.entries()].map(([id,d])=>({id,...d})); adminLoaded=true; saveAdminCache();
     renderAdminSummary(); renderIssuesFromDB();
     await regenerateSnapshot(true, adminProducts);
     toast('Import applied and published');
@@ -647,12 +648,48 @@ async function applyImport(){
    ADMIN DATA + MAPPING
    ===================================================================== */
 let adminProducts=[];
-async function loadAdminData(){
-  const snap=await db.collection(COL).get();
-  adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
-  // Real publish time comes from the snapshot itself, not this browser's memory.
-  const s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0);
-  lastPublished = s0 ? s0.data().t : null; updatePublishUI();
+/* Each device keeps a copy of all products (IndexedDB) and on open reads only the products changed
+   since its last sync — every write stamps updatedAt. A full read happens on a device's first open,
+   once a week, or with "Reload all products". */
+const stamp = () => ({ updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+const ADMIN_CACHE='admin_products_v1', FULL_EVERY=7*24*3600*1000;
+// syncedAt = newest updatedAt seen, as [seconds, nanoseconds]. Firestore commits are atomic and in time order,
+// so asking for updatedAt > that never misses a write and never re-reads one.
+let adminSync={ syncedAt:[0,0], fullAt:0 };
+function idbOpen(){ return new Promise((res,rej)=>{ const r=indexedDB.open('sr_catalog',1); r.onupgradeneeded=()=>r.result.createObjectStore('kv'); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+async function idbGet(k){ try{ const d=await idbOpen(); return await new Promise((res,rej)=>{ const q=d.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); }catch(e){ return null; } }
+async function idbSet(k,v){ try{ const d=await idbOpen(); await new Promise((res,rej)=>{ const t=d.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete=res; t.onerror=()=>rej(t.error); }); }catch(e){ console.warn('Device cache not saved',e); } }
+const plain = o => JSON.parse(JSON.stringify(o)); // drops Firestore classes so IndexedDB can store it
+function saveAdminCache(){ idbSet(ADMIN_CACHE,{ ...adminSync, lastPublished, docs:plain(adminProducts) }); }
+const tsPair = v => v ? [v.seconds??0, v.nanoseconds??0] : [0,0];
+const later = (a,b) => (a[0]-b[0]||a[1]-b[1])>0 ? a : b;
+async function syncAdminData(forceFull){
+  const cached = forceFull ? null : await idbGet(ADMIN_CACHE);
+  let reads;
+  if(cached && Array.isArray(cached.docs) && Array.isArray(cached.syncedAt) && Date.now()-cached.fullAt < FULL_EVERY){
+    const since=new firebase.firestore.Timestamp(cached.syncedAt[0], cached.syncedAt[1]);
+    const snap=await db.collection(COL).where('updatedAt','>',since).get();
+    const byId=new Map(cached.docs.map(d=>[d.id,d]));
+    let newest=cached.syncedAt, pub=cached.lastPublished??null;
+    snap.docs.forEach(d=>{ const x=d.data(); newest=later(tsPair(x.updatedAt),newest);
+      if(d.id===SNAP_PREFIX+'meta') pub=x.t; else if(!isSnapshotDoc(d.id)) byId.set(d.id,{id:d.id,...x}); });
+    adminProducts=[...byId.values()]; lastPublished=pub; adminSync={ syncedAt:newest, fullAt:cached.fullAt }; reads=snap.size;
+  } else {
+    const snap=await db.collection(COL).get();
+    let newest=[0,0];
+    snap.docs.forEach(d=>{ newest=later(tsPair(d.data().updatedAt),newest); });
+    adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
+    const meta=snap.docs.find(d=>d.id===SNAP_PREFIX+'meta'), s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0);
+    lastPublished = meta ? meta.data().t : s0 ? s0.data().t : null;
+    adminSync={ syncedAt:newest, fullAt:Date.now() }; reads=snap.size;
+  }
+  saveAdminCache();
+  $('#syncNote').textContent = `Synced — ${reads} product${reads===1?'':'s'} read from the database`;
+  console.log('Admin sync:', reads, 'docs read');
+  updatePublishUI();
+}
+async function loadAdminData(forceFull){
+  await syncAdminData(forceFull);
   renderAdminSummary();
 }
 // Reading every product costs ~3,500 Firestore reads, so edits update this list in memory instead of re-reading it.
@@ -691,7 +728,8 @@ function updatePublishUI(){
   const b=$('#publishBtn');
   // Always available; highlighted when there are edits customers can't see yet.
   b.classList.toggle('primary', pendingPublish>0 || lastPublished===null);
-  $('#publishN').textContent = pendingPublish>0 ? ' '+pendingPublish+' change'+(pendingPublish>1?'s':'') : '';
+  const n=$('#publishN'); // absent while the button reads "Publishing…"
+  if(n) n.textContent = pendingPublish>0 ? ' '+pendingPublish+' change'+(pendingPublish>1?'s':'') : '';
   $('#publishedStamp').textContent = lastPublished ? 'Live catalog last published '+timeAgo(lastPublished)
     : lastPublished===null ? 'Not published yet — customers see a slower live list' : '';
 }
@@ -702,9 +740,9 @@ function timeAgo(ts){
 }
 async function regenerateSnapshot(silent, freshList){
   try{
-    // The Publish button reads fresh (other staff may have edited); the import passes the list it just wrote.
-    const src=freshList ? freshList.filter(p=>p.inStock).map(p=>({id:p.id,data:()=>p}))
-      : (await db.collection(COL).where('inStock','==',true).get()).docs;
+    // The import passes the list it just wrote; the Publish button first pulls other staff's changes.
+    if(!freshList){ await syncAdminData(); renderAdminSummary(); freshList=adminProducts; }
+    const src=freshList.filter(p=>p.inStock).map(p=>({id:p.id,data:()=>p}));
     const list=src.map(d=>{
       const p=d.data();
       return { id:d.id, displayName:p.displayName||'', rawName:p.rawName||'', brand:p.brand||'', autoBrand:p.autoBrand||'',
@@ -716,12 +754,13 @@ async function regenerateSnapshot(silent, freshList){
     // Split into chunks well under Firestore's 1 MiB doc limit, written in one atomic batch.
     const json=JSON.stringify(list), parts=[];
     for(let i=0;i<json.length;i+=SNAP_CHUNK) parts.push(json.slice(i,i+SNAP_CHUNK));
-    const prev=await db.collection(COL).doc(SNAP_PREFIX+0).get();
-    const prevN=prev.exists?(prev.data().of||0):0, t=Date.now(), batch=db.batch();
+    const prev=await db.collection(COL).doc(SNAP_PREFIX+'meta').get();
+    const prevN=prev.exists?(prev.data().of||0):3, t=Date.now(), batch=db.batch();
     parts.forEach((data,i)=>batch.set(db.collection(COL).doc(SNAP_PREFIX+i),{snapshot:true,part:i,of:parts.length,t,data}));
     for(let i=parts.length;i<prevN;i++) batch.delete(db.collection(COL).doc(SNAP_PREFIX+i));
+    batch.set(db.collection(COL).doc(SNAP_PREFIX+'meta'),{t,of:parts.length,...stamp()}); // tiny doc so admins learn the publish time cheaply
     await batch.commit();
-    lastPublished=Date.now(); pendingPublish=0; updatePublishUI();
+    lastPublished=t; saveAdminCache(); pendingPublish=0; updatePublishUI();
     invalidateClientCache();
     if(!silent) toast('Catalog published — '+list.length+' products live');
     return true;
@@ -833,21 +872,21 @@ function openMapEditor(id){
     openMapEditor(p.id);
   });
   if($('#clearAllPhotos')) $('#clearAllPhotos').onclick=async()=>{
-    await db.collection(COL).doc(p.id).set({images:[], imageUrl:firebase.firestore.FieldValue.delete()},{merge:true});
+    await db.collection(COL).doc(p.id).set({images:[], imageUrl:firebase.firestore.FieldValue.delete(), ...stamp()},{merge:true});
     invalidateClientCache(); markDirty();
     const ap=adminProducts.find(x=>x.id===p.id); if(ap){ ap.images=[]; ap.imageUrl=''; }
-    toast('Photos cleared'); openMapEditor(p.id);
+    toast('Photos cleared'); openMapEditor(p.id); saveAdminCache();
   };
   $('#saveMap').onclick=async()=>{
     await db.collection(COL).doc(p.id).set({
       displayName:$('#f_name').value.trim(), brand:$('#f_brand').value.trim(),
       color:$('#f_color').value.trim(), gender:$('#f_gender').value, category:$('#f_cat').value,
-      notes:$('#f_notes').value.trim(), mapped:true
+      notes:$('#f_notes').value.trim(), mapped:true, ...stamp()
     },{merge:true});
     Object.assign(p,{displayName:$('#f_name').value.trim(), brand:$('#f_brand').value.trim(), color:$('#f_color').value.trim(),
       gender:$('#f_gender').value, category:$('#f_cat').value, notes:$('#f_notes').value.trim(), mapped:true});
     markDirty();
-    toast('Saved — publish when ready to show customers'); closeSheet(); invalidateClientCache(); renderAdminSummary();
+    toast('Saved — publish when ready to show customers'); closeSheet(); invalidateClientCache(); renderAdminSummary(); saveAdminCache();
   };
 }
 /* bulk edit */
@@ -872,13 +911,13 @@ function bindBulk(){
         const batch=db.batch();
         ids.slice(i,i+CH).forEach(id=>{
           const d={}; if(brand)d.brand=brand; if(g)d.gender=g; if(c)d.category=c; if(mark)d.mapped=true;
-          batch.set(db.collection(COL).doc(id),d,{merge:true});
+          batch.set(db.collection(COL).doc(id),{...d,...stamp()},{merge:true});
           const ap=adminProducts.find(x=>x.id===id); if(ap) Object.assign(ap,d);
         });
         await batch.commit();
       }
       markDirty();
-      toast('Updated '+ids.length+' products — publish when ready'); selected.clear(); closeSheet(); invalidateClientCache(); renderAdminSummary(); updateBulk();
+      toast('Updated '+ids.length+' products — publish when ready'); selected.clear(); closeSheet(); invalidateClientCache(); renderAdminSummary(); updateBulk(); saveAdminCache();
     };
   };
 }
@@ -942,9 +981,9 @@ async function uploadImageFor(base, file, slot){
     while(arr.length<at) arr.push('');
     arr[at]=url;
     const clean=arr.filter(Boolean);
-    await db.collection(COL).doc(base).set({images:clean, imageUrl:clean[0]},{merge:true});
+    await db.collection(COL).doc(base).set({images:clean, imageUrl:clean[0], ...stamp()},{merge:true});
     invalidateClientCache();
-    const p=adminProducts.find(x=>x.id===base); if(p){ p.images=clean; p.imageUrl=clean[0]; }
+    const p=adminProducts.find(x=>x.id===base); if(p){ p.images=clean; p.imageUrl=clean[0]; } saveAdminCache();
     return {url, images:clean};
   }catch(e){ console.error(e); toast('Upload failed: '+e.message,true); return null; }
 }
@@ -953,9 +992,9 @@ async function removeImageAt(base, idx){
     const snap=await db.collection(COL).doc(base).get();
     const arr=imagesOf(snap.exists?snap.data():null).slice();
     arr.splice(idx,1);
-    await db.collection(COL).doc(base).set({images:arr, imageUrl:arr[0]||firebase.firestore.FieldValue.delete()},{merge:true});
+    await db.collection(COL).doc(base).set({images:arr, imageUrl:arr[0]||firebase.firestore.FieldValue.delete(), ...stamp()},{merge:true});
     invalidateClientCache();
-    const p=adminProducts.find(x=>x.id===base); if(p){ p.images=arr; p.imageUrl=arr[0]||''; }
+    const p=adminProducts.find(x=>x.id===base); if(p){ p.images=arr; p.imageUrl=arr[0]||''; } saveAdminCache();
     toast('Photo removed');
   }catch(e){ console.error(e); toast('Remove failed: '+e.message,true); }
 }
@@ -1379,6 +1418,7 @@ $('#mSort') && ($('#mSort').onchange=renderMapList);
 
 // boot
 bindImport(); bindBulk(); bindBatchImages(); updatePublishUI();
+$('#reloadAll').onclick=async()=>{ $('#syncNote').textContent='Reloading all products…'; await loadAdminData(true); renderIssuesFromDB(); toast('All products reloaded'); };
 $('#fixCacheBtn').onclick=fixPhotoCaching;
 // Admin data is loaded when the Admin tab is opened, not on every page load (staff mostly use the catalog view).
 loadClient();
