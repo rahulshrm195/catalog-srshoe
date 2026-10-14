@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.5.3"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.4"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -640,6 +640,10 @@ async function loadAdminData(){
   // Real publish time comes from the snapshot itself, not this browser's memory.
   const s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0);
   lastPublished = s0 ? s0.data().t : null; updatePublishUI();
+  renderAdminSummary();
+}
+// Reading every product costs ~3,500 Firestore reads, so edits update this list in memory instead of re-reading it.
+function renderAdminSummary(){
   const mapped=adminProducts.filter(p=>p.mapped).length;
   const noimg=adminProducts.filter(p=>p.inStock && !imagesOf(p).length).length;
   $('#adminSub').textContent=`${adminProducts.length} products · ${mapped} mapped · ${adminProducts.filter(p=>p.inStock).length} in stock · ${noimg} in-stock without a photo`;
@@ -825,8 +829,10 @@ function openMapEditor(id){
       color:$('#f_color').value.trim(), gender:$('#f_gender').value, category:$('#f_cat').value,
       notes:$('#f_notes').value.trim(), mapped:true
     },{merge:true});
+    Object.assign(p,{displayName:$('#f_name').value.trim(), brand:$('#f_brand').value.trim(), color:$('#f_color').value.trim(),
+      gender:$('#f_gender').value, category:$('#f_cat').value, notes:$('#f_notes').value.trim(), mapped:true});
     markDirty();
-    toast('Saved — publish when ready to show customers'); closeSheet(); invalidateClientCache(); loadAdminData();
+    toast('Saved — publish when ready to show customers'); closeSheet(); invalidateClientCache(); renderAdminSummary();
   };
 }
 /* bulk edit */
@@ -852,11 +858,12 @@ function bindBulk(){
         ids.slice(i,i+CH).forEach(id=>{
           const d={}; if(brand)d.brand=brand; if(g)d.gender=g; if(c)d.category=c; if(mark)d.mapped=true;
           batch.set(db.collection(COL).doc(id),d,{merge:true});
+          const ap=adminProducts.find(x=>x.id===id); if(ap) Object.assign(ap,d);
         });
         await batch.commit();
       }
       markDirty();
-      toast('Updated '+ids.length+' products — publish when ready'); selected.clear(); closeSheet(); invalidateClientCache(); loadAdminData(); updateBulk();
+      toast('Updated '+ids.length+' products — publish when ready'); selected.clear(); closeSheet(); invalidateClientCache(); renderAdminSummary(); updateBulk();
     };
   };
 }
@@ -969,7 +976,7 @@ async function batchImages(files){
     <div class="stat oos"><div class="num">${miss.length}</div><div class="lbl">No matching code</div></div>
     <div class="stat iss"><div class="num">${fail}</div><div class="lbl">Failed</div></div>
   </div>${miss.length?`<div class="sub">Unmatched filenames (name as CODE.jpg for photo 1, CODE_2.jpg for photo 2, etc): ${miss.map(esc).join(', ')}</div>`:''}`;
-  toast(ok+' photos linked — publishing…'); await loadAdminData(); await regenerateSnapshot(true); toast(ok+' photos linked and published');
+  toast(ok+' photos linked — publishing…'); renderAdminSummary(); await regenerateSnapshot(true); toast(ok+' photos linked and published');
 }
 
 /* =====================================================================
@@ -1322,13 +1329,15 @@ $('#overlay').onclick=e=>{ if(e.target.id==='overlay') closeSheet(); };
 function showClient(){ $('#clientView').classList.remove('hidden'); $('#adminView').classList.add('hidden'); $('#navClient').style.color='var(--ink)'; $('#navAdmin').style.color=''; }
 function showAdmin(){ $('#adminView').classList.remove('hidden'); $('#clientView').classList.add('hidden'); $('#navAdmin').style.color='var(--ink)'; $('#navClient').style.color=''; }
 $('#navClient').onclick=()=>{ showClient(); loadClient(); };
-$('#navAdmin').onclick=showAdmin;
+let adminLoaded=false;
+function ensureAdminData(){ if(adminLoaded) return; adminLoaded=true; loadAdminData().then(renderIssuesFromDB).catch(e=>{ adminLoaded=false; console.error(e); }); }
+$('#navAdmin').onclick=()=>{ showAdmin(); if(sessionStorage.getItem('sr_admin')==='1') ensureAdminData(); };
 
 // admin gate
 function tryUnlock(){
   if($('#pinInput').value===CONFIG.adminPin){
     sessionStorage.setItem('sr_admin','1'); $('#pinGate').classList.add('hidden'); $('#adminContent').classList.remove('hidden');
-    loadAdminData().then(renderIssuesFromDB);
+    ensureAdminData();
   } else toast('Wrong PIN',true);
 }
 $('#pinBtn').onclick=tryUnlock;
@@ -1356,7 +1365,7 @@ $('#mSort') && ($('#mSort').onchange=renderMapList);
 // boot
 bindImport(); bindBulk(); bindBatchImages(); updatePublishUI();
 $('#fixCacheBtn').onclick=fixPhotoCaching;
-if(sessionStorage.getItem('sr_admin')==='1'){ loadAdminData().then(renderIssuesFromDB); }
+// Admin data is loaded when the Admin tab is opened, not on every page load (staff mostly use the catalog view).
 loadClient();
 
 document.title = 'SR Shoes Catalog — v'+APP_VERSION;
