@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.5.2"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.3"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -1131,7 +1131,8 @@ function openFilterPanel(){
 }
 $('#filterBtn').onclick=openFilterPanel;
 function renderClient(){
-  const q=$('#q').value.trim().toLowerCase();
+  const raw=$('#q').value.trim().toLowerCase();
+  const q=raw.length>=2?raw:''; // a single letter matches almost everything, so wait for two
   let list=cachedProducts.filter(p=>{
     if(cf.brand && brandOf(p)!==cf.brand) return false;
     if(cf.gender && genderOf(p)!==cf.gender) return false;
@@ -1342,7 +1343,11 @@ $$('.tab').forEach(t=>t.onclick=()=>{
 });
 
 // client control bindings
-$('#q').addEventListener('input',()=>renderClient());
+// Search once typing pauses, not on every keystroke; Enter searches straight away.
+let searchTimer=null, lastSearch='';
+function runSearch(){ clearTimeout(searchTimer); const v=$('#q').value.trim().toLowerCase(); const k=v.length>=2?v:''; if(k!==lastSearch){ lastSearch=k; renderClient(); } }
+$('#q').addEventListener('input',()=>{ clearTimeout(searchTimer); searchTimer=setTimeout(runSearch,400); });
+$('#q').addEventListener('keydown',e=>{ if(e.key==='Enter'){ runSearch(); $('#q').blur(); } });
 $('#sortBy').onchange=()=>renderClient();
 $('#mq') && ($('#mq').addEventListener('input',renderMapList));
 $('#mFilterStatus') && ($('#mFilterStatus').onchange=renderMapList);
