@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.5.4"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.5.5"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -567,17 +567,26 @@ async function handleFile(f){
     const existing=new Map(); snap.forEach(d=>{ if(!isSnapshotDoc(d.id)) existing.set(d.id,d.data()); });
     const parsedBases=new Set(parsed.map(p=>p.base));
     let nNew=0,nUpd=0;
-    parsed.forEach(p=> existing.has(p.base)?nUpd++:nNew++);
+    // Only products whose stock-file data changed get written — most rows are identical day to day.
+    const changed=parsed.filter(p=>{
+      if(!p.base) return false;
+      const ex=existing.get(p.base);
+      if(!ex){ nNew++; return true; }
+      const diff=fileDiffers(p,ex); if(diff) nUpd++; return diff;
+    });
     const goingOOS=[...existing.entries()].filter(([id,d])=>d.inStock && !parsedBases.has(id)).map(([id])=>id);
     const issues=parsed.filter(p=>p.issues && p.issues.length);
-    pendingImport={ parsed, goingOOS, issues, fileName:f.name };
-    renderImportPreview(nNew,nUpd,goingOOS.length,issues.length);
+    pendingImport={ parsed:changed, goingOOS, issues, fileName:f.name, existing, unchanged:parsed.length-changed.length };
+    renderImportPreview(nNew,nUpd,goingOOS.length,issues.length,parsed.length-changed.length);
   }catch(err){
     console.error(err);
     prev.innerHTML='<div class="issue"><span class="idot"></span><div><div class="iwhat">Could not read this file.</div><div class="iraw">'+esc(err.message)+'</div></div></div>';
   }
 }
-function renderImportPreview(nNew,nUpd,nOOS,nIss){
+// Compare with keys sorted — Firestore doesn't keep map key order.
+function stableStr(v){ return JSON.stringify(v,(k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.keys(x).sort().reduce((o,kk)=>(o[kk]=x[kk],o),{}):x); }
+function fileDiffers(p,ex){ const {base,...fields}=p; return Object.keys(fields).some(k=>stableStr(fields[k]??null)!==stableStr(ex[k]??null)); }
+function renderImportPreview(nNew,nUpd,nOOS,nIss,nSame){
   $('#importPreview').innerHTML=`
     <div class="stat-row">
       <div class="stat new"><div class="num">${nNew}</div><div class="lbl">New products</div></div>
@@ -585,6 +594,7 @@ function renderImportPreview(nNew,nUpd,nOOS,nIss){
       <div class="stat oos"><div class="num">${nOOS}</div><div class="lbl">Going out of stock</div></div>
       <div class="stat iss"><div class="num">${nIss}</div><div class="lbl">Data issues</div></div>
     </div>
+    <p class="sub" style="margin:6px 0 4px">${nSame} products unchanged — skipped.</p>
     <p class="sub" style="margin:6px 0 14px">New products land in the mapping queue. Updates change stock &amp; price only — names, photos and mapping are never touched. Out-of-stock products are hidden from customers but kept.</p>
     <div style="display:flex;gap:10px"><button class="btn primary" id="applyImport">Apply import</button><button class="btn ghost" id="cancelImport">Cancel</button></div>
     <div id="applyProgress" class="hidden" style="margin-top:16px"><div class="progress"><i id="pbar"></i></div><div id="ptext" class="sub" style="margin:6px 0 0"></div></div>`;
@@ -593,7 +603,7 @@ function renderImportPreview(nNew,nUpd,nOOS,nIss){
 }
 async function applyImport(){
   if(!pendingImport) return;
-  const {parsed,goingOOS}=pendingImport;
+  const {parsed,goingOOS,existing}=pendingImport;
   $('#applyImport').disabled=true; $('#cancelImport').disabled=true;
   $('#applyProgress').classList.remove('hidden');
   const ops=[]; // {ref, data}
@@ -617,9 +627,12 @@ async function applyImport(){
     toast('Import applied — publishing to catalog…');
     pendingImport=null;
     invalidateClientCache();
-    await loadAdminData();
-    renderIssuesFromDB();
-    await regenerateSnapshot(true);
+    // `existing` was read moments ago; apply what we just wrote instead of reading ~3,500 products again.
+    parsed.forEach(p=>{ const {base,...f}=p; existing.set(base,{...(existing.get(base)||{}),...f}); });
+    goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0}));
+    adminProducts=[...existing.entries()].map(([id,d])=>({id,...d})); adminLoaded=true;
+    renderAdminSummary(); renderIssuesFromDB();
+    await regenerateSnapshot(true, adminProducts);
     toast('Import applied and published');
   }catch(err){
     console.error('Import failed at', done, '/', ops.length, err);
@@ -687,10 +700,12 @@ function timeAgo(ts){
   if(s<60) return 'just now'; if(s<3600) return Math.floor(s/60)+'m ago';
   if(s<86400) return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago';
 }
-async function regenerateSnapshot(silent){
+async function regenerateSnapshot(silent, freshList){
   try{
-    const snap=await db.collection(COL).where('inStock','==',true).get();
-    const list=snap.docs.map(d=>{
+    // The Publish button reads fresh (other staff may have edited); the import passes the list it just wrote.
+    const src=freshList ? freshList.filter(p=>p.inStock).map(p=>({id:p.id,data:()=>p}))
+      : (await db.collection(COL).where('inStock','==',true).get()).docs;
+    const list=src.map(d=>{
       const p=d.data();
       return { id:d.id, displayName:p.displayName||'', rawName:p.rawName||'', brand:p.brand||'', autoBrand:p.autoBrand||'',
         gender:p.gender||'', autoGender:p.autoGender||'', category:p.category||'', autoCategory:p.autoCategory||'',
