@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.8.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.9.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -455,6 +455,7 @@ function toast(msg, err){ const t=$('#toast'); t.textContent=msg; t.className='t
 const baseCode = code => String(code).trim().replace(/X(\d+(\.\d+)?(K|XL)?|XXL|XL|[SML])$/i,'');
 // Kids sizes (…K) come before the regular run 1, 2, 3 …
 const sizeOrder = (a,b) => (/K$/i.test(b.label)-/K$/i.test(a.label)) || (a.num??999)-(b.num??999) || String(a.label).localeCompare(b.label);
+const SIZELESS=/sock|belt|wal+et|polish|brush|kiwi|\blace|door ?mat|dummy/i;
 function parseSize(desc){
   const d = String(desc??'').trim();
   const m = d.match(/(\d+(?:\.\d+)?)(\s*K)?\s*$/i);        // trailing number, optional K (kids)
@@ -498,6 +499,12 @@ function autoCategory(group){
 }
 
 /* ---------- Read the xlsx into products keyed by base code ---------- */
+// The export carries its date in the title rows (e.g. "15 Oct 2026").
+function fileDateOf(wb){
+  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''}).slice(0,6);
+  for(const r of rows) for(const c of r) if(c instanceof Date && !isNaN(c)) return c.getTime();
+  return null;
+}
 function parseWorkbook(wb){
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
@@ -518,14 +525,21 @@ function parseWorkbook(wb){
     const base=baseCode(code);
     const rawStock=Math.round(toNum(r[cStock])), stock=Math.max(0,rawStock);
     const rate=toNum(r[cRate]);
-    const sz=parseSize(r[cDesc]);
+    const sizeless=SIZELESS.test(String(r[cGroup]??'')+' '+String(r[cSub]??''));
+    let sz=parseSize(r[cDesc]);
+    if(sizeless && sz.num===null){
+      // Socks, belts, wallets… have no size; the Desc column holds a colour, the group name, or nothing.
+      const d=String(r[cDesc]??'').trim();
+      const looksLikeGroup=/sock|belt|wal+et|entry|assorted|all colou?rs/i.test(d);
+      sz={ label: /^(XS|S|M|L|XL|XXL)$/i.test(d) ? d.toUpperCase() : 'Free size', num:null, color: d && !looksLikeGroup && !/^(XS|S|M|L|XL|XXL)$/i.test(d) ? d : '', sizeless:true };
+    }
     const name=String(r[cName]??'').trim();
     if(!map.has(base)){
       map.set(base,{ base, rawName:stripSizeFromName(name)||name, group:String(r[cGroup]??'').trim(),
         subGroup:String(r[cSub]??'').trim(), sizes:[], _colorHints:new Set() });
     }
     const p=map.get(base);
-    p.sizes.push({ code, label:sz.label, num:sz.num, stock, rate, color:sz.color, negative:rawStock<0 });
+    p.sizes.push({ code, label:sz.label, num:sz.num, stock, rate, color:sz.color, negative:rawStock<0, sizeless:!!sz.sizeless });
     if(sz.color) p._colorHints.add(sz.color);
   }
 
@@ -539,7 +553,7 @@ function parseWorkbook(wb){
     const issues=[];
     if(inStockSizes.length){
       if(inStockSizes.some(s=>s.rate<=0)) issues.push('Missing price on '+inStockSizes.filter(s=>s.rate<=0).map(s=>s.label).join(', '));
-      const bad=inStockSizes.filter(s=>s.num===null);
+      const bad=inStockSizes.filter(s=>s.num===null && !s.sizeless);
       if(bad.length) issues.push('Unclear size: '+bad.map(s=>'"'+s.label+'"').join(', '));
       if(!p.rawName) issues.push('Missing product name');
     }
@@ -587,13 +601,22 @@ async function handleFile(f){
   prev.innerHTML='<div class="state"><div class="spinner"></div>Reading '+esc(f.name)+'…</div>';
   try{
     const buf=await f.arrayBuffer();
-    const wb=XLSX.read(buf,{type:'array'});
+    const wb=XLSX.read(buf,{type:'array',cellDates:true});
+    const fileDate=fileDateOf(wb);
+    const lastFile=adminSettings.lastFileDate;
+    if(fileDate && lastFile && fileDate<lastFile){
+      const fmt=t=>new Date(t).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+      if(!confirm(`This stock file is dated ${fmt(fileDate)}, but a newer file (${fmt(lastFile)}) was already imported.\n\nImporting it would bring back stock that has since been sold. Import anyway?`)){
+        prev.innerHTML='<div class="state">Import cancelled — choose the latest stock file.</div>'; return;
+      }
+    }
     const parsed=parseWorkbook(wb);
     prev.innerHTML='<div class="state"><div class="spinner"></div>Comparing against your catalog…</div>';
     // Bring this device's copy up to date (only changed products are read), then compare against it.
     await syncAdminData();
     const existing=new Map(adminProducts.map(({id,...d})=>[id,d]));
     const parsedBases=new Set(parsed.map(p=>p.base));
+    recordMovement(parsed, existing);
     let nNew=0,nUpd=0;
     // Only products whose stock-file data changed get written — most rows are identical day to day.
     const changed=parsed.filter(p=>{
@@ -615,7 +638,7 @@ async function handleFile(f){
     carry.forEach((c,base)=>{ const p=parsed.find(x=>x.base===base); if(p && !changed.includes(p)){ changed.push(p); nUpd++; } });
     const goingOOS=[...existing.entries()].filter(([id,d])=>d.inStock && !parsedBases.has(id)).map(([id])=>id);
     const issues=parsed.filter(p=>p.issues && p.issues.length);
-    pendingImport={ parsed:changed, carry, goingOOS, issues, fileName:f.name, existing, unchanged:parsed.length-changed.length };
+    pendingImport={ fileDate, parsed:changed, carry, goingOOS, issues, fileName:f.name, existing, unchanged:parsed.length-changed.length };
     renderImportPreview(nNew,nUpd,goingOOS.length,issues.length,parsed.length-changed.length);
   }catch(err){
     console.error(err);
@@ -640,9 +663,43 @@ function renderImportPreview(nNew,nUpd,nOOS,nIss,nSame){
   $('#cancelImport').onclick=()=>{ pendingImport=null; $('#importPreview').classList.add('hidden'); };
   $('#applyImport').onclick=applyImport;
 }
+/* Stock age. The billing export has no purchase or sale dates, so each import compares every size with the
+   previous import: stock down → lastSale, stock up or a new size → lastIn. New products get firstSeen.
+   Products that existed before tracking began have no firstSeen; their age counts from settings.trackingStart. */
+function recordMovement(parsed, existing){
+  const now=Date.now();
+  for(const p of parsed){
+    const ex=existing.get(p.base);
+    // previous sizes, including kids sizes that older versions stored as separate products (N6246X9K)
+    // An out-of-stock product keeps its old size list, so its pairs count as zero (dates are kept).
+    const live=d=>(d.sizes||[]).map(o=>d.inStock===false?{...o,stock:0}:o);
+    const prevSizes=ex?live(ex):[]; let hadSplit=false;
+    for(const [id,d] of existing) if(id!==p.base && baseCode(id)===p.base){ prevSizes.push(...live(d)); hadSplit=true; }
+    const known=!!ex || hadSplit;
+    const prev=new Map(); prevSizes.forEach(o=>{ const q=prev.get(o.label); prev.set(o.label, q?{...o,stock:(q.stock||0)+(o.stock||0),lastSale:Math.max(q.lastSale||0,o.lastSale||0)||undefined,lastIn:Math.max(q.lastIn||0,o.lastIn||0)||undefined}:o); });
+    let sold=false, came=false;
+    // sizeless items (socks…) were stored under labels like "Mens Socks" before; compare their totals
+    const looseBefore=[...prev.values()].filter(o=>o.num==null).reduce((a,o)=>a+(o.stock||0),0);
+    for(const s of p.sizes){
+      const o=prev.get(s.label);
+      if(o){ if(o.lastSale) s.lastSale=o.lastSale; if(o.lastIn) s.lastIn=o.lastIn; }
+      const before = o ? (o.stock||0) : (s.num==null ? looseBefore : 0);
+      if(known && s.stock<before){ s.lastSale=now; sold=true; }
+      else if(known && s.stock>before){ s.lastIn=now; came=true; }
+    }
+    // a numbered size that disappeared from the file sold its last pairs
+    for(const [label,o] of prev) if(o.num!=null && (o.stock||0)>0 && !p.sizes.some(s=>s.label===label)){
+      p.sizes.push({label, num:o.num??null, stock:0, rate:o.rate||0, lastSale:now, ...(o.lastIn?{lastIn:o.lastIn}:{})}); sold=true;
+    }
+    p.sizes.sort(sizeOrder);
+    if(ex?.firstSeen) p.firstSeen=ex.firstSeen; else if(!known) p.firstSeen=now;
+    const ls=sold?now:ex?.lastSale, li=came?now:ex?.lastIn;
+    if(ls) p.lastSale=ls; if(li) p.lastIn=li;
+  }
+}
 async function applyImport(){
   if(!pendingImport) return;
-  const {parsed,goingOOS,existing,carry}=pendingImport;
+  const {parsed,goingOOS,existing,carry,fileDate}=pendingImport;
   $('#applyImport').disabled=true; $('#cancelImport').disabled=true;
   $('#applyProgress').classList.remove('hidden');
   const ops=[]; // {ref, data}
@@ -651,7 +708,7 @@ async function applyImport(){
     if(!base) return; // skip any row that produced an empty product code
     ops.push({ref:db.collection(COL).doc(base), data:{ ...(carry.get(base)||{}), ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }});
   });
-  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }}));
+  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSale:Date.now(), lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }}));
   const CH=400; let done=0;
   try{
     for(let i=0;i<ops.length;i+=CH){
@@ -668,7 +725,9 @@ async function applyImport(){
     invalidateClientCache();
     // `existing` was read moments ago; apply what we just wrote instead of reading ~3,500 products again.
     parsed.forEach(p=>{ const {base,...f}=p; existing.set(base,{...(existing.get(base)||{}),...(carry.get(base)||{}),...f}); });
-    goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0}));
+    goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0,lastSale:Date.now()}));
+    saveSettings({ lastFileDate: Math.max(fileDate||0, adminSettings.lastFileDate||0) || null,
+                   trackingStart: adminSettings.trackingStart || Date.now() }).catch(e=>console.warn('Settings not saved',e));
     adminProducts=[...existing.entries()].map(([id,d])=>({id,...d})); adminLoaded=true; saveAdminCache();
     renderAdminSummary(); renderIssuesFromDB();
     await regenerateSnapshot(true, adminProducts);
@@ -900,6 +959,15 @@ const DEFAULT_CATS=['Chappals','Sandals','Sliders','Slippers','Sports Shoes','Sn
   'School Shoes','PVC Shoes','Full Cover Sandals','Hiking Shoes','Fancy','Socks','Belts','Wallets','Other'];
 function opts(arr,val){ const list=val&&!arr.includes(val)?[...arr,val]:arr; return list.map(o=>`<option value="${esc(o)}" ${o===val?'selected':''}>${esc(o)}</option>`).join(''); }
 
+function ago(t){ if(!t) return ''; const d=Math.floor((Date.now()-t)/86400000); return d<=0?'today':d===1?'yesterday':d+' days ago'; }
+function movementText(p){
+  const since=p.firstSeen||adminSettings.trackingStart;
+  const bits=[];
+  bits.push(p.firstSeen?`In catalog since ${ago(p.firstSeen)}`:since?`Here before tracking began (${ago(since)})`:'Tracking starts with the next import');
+  bits.push(p.lastSale?`last sale ${ago(p.lastSale)}`:'no sale recorded yet');
+  if(p.lastIn) bits.push(`last restock ${ago(p.lastIn)}`);
+  return bits.join(' · ');
+}
 function openMapEditor(id){
   const p=adminProducts.find(x=>x.id===id); if(!p) return;
   const sizeStr=(p.sizes||[]).map(s=>`${s.label}(${s.stock})`).join('  ');
@@ -919,6 +987,7 @@ function openMapEditor(id){
         <div class="rline"><b>Group</b><span>${esc(p.group||'—')} · ${esc(p.subGroup||'—')}</span></div>
         <div class="rline"><b>Price</b><span>${price}</span></div>
         <div class="rline"><b>Sizes</b><span>${esc(sizeStr||'—')}</span></div>
+        <div class="rline"><b>Movement</b><span>${esc(movementText(p))}</span></div>
       </div>
       <div class="field"><label>Display name</label><input id="f_name" value="${esc(p.displayName||p.rawName||'')}"></div>
       <div class="two">
