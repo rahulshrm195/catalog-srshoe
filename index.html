@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.7.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.8.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -178,6 +178,7 @@ select.control:focus{border-color:var(--accent)}
 .size-cell .n{font-weight:800; font-size:15px}
 .size-cell .s{font-size:11px; color:var(--muted); font-weight:600}
 .size-cell.low .s{color:var(--warn)}
+#newCat{border:1px solid var(--line-strong); border-radius:11px; padding:10px 12px; background:var(--surface); color:var(--ink)}
 .size-cell .p{font-size:11px; font-weight:700; margin-top:2px}
 .size-cell .c{font-size:9px; line-height:1.3; color:var(--faint); margin-top:3px}
 
@@ -331,8 +332,9 @@ select.control:focus{border-color:var(--accent)}
         <button class="tab" data-tab="map">Products <span id="mapCount"></span></button>
         <button class="tab" data-tab="images">Photos</button>
         <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
+        <button class="tab" data-tab="cats">Categories</button>
       </div>
-      <button class="btn" id="publishBtn">Publish<span id="publishN"></span> to catalog</button>
+      <button class="btn" id="publishBtn"><span>Publish to catalog<span id="publishN"></span></span></button>
       <span class="sub" id="publishedStamp" style="margin:0"></span>
     </div>
 
@@ -391,6 +393,17 @@ select.control:focus{border-color:var(--accent)}
         <button class="btn sm" id="fixCacheBtn">Speed up photo loading</button>
         <span id="fixCacheText" class="sub" style="margin-left:8px">One-time fix for photos uploaded before v1.4.0. Safe to run again.</span>
       </div>
+    </div>
+
+    <!-- CATEGORIES -->
+    <div class="panel tabpane hidden" id="pane-cats">
+      <h2 style="margin:0 0 4px; font-size:18px">Categories</h2>
+      <p class="sub" style="margin:0 0 16px">The product types used in the product editor and in the catalog filters. Renaming one updates every product that uses it — press Publish afterwards to show customers.</p>
+      <div style="display:flex;gap:8px;margin-bottom:16px">
+        <input id="newCat" class="control" placeholder="New category, e.g. Hiking Shoes" style="flex:1;min-width:0" maxlength="40" />
+        <button class="btn primary" id="addCat">Add</button>
+      </div>
+      <div id="catList"></div>
     </div>
 
     <!-- ISSUES -->
@@ -684,7 +697,7 @@ function idbOpen(){ return new Promise((res,rej)=>{ const r=indexedDB.open('sr_c
 async function idbGet(k){ try{ const d=await idbOpen(); return await new Promise((res,rej)=>{ const q=d.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); }catch(e){ return null; } }
 async function idbSet(k,v){ try{ const d=await idbOpen(); await new Promise((res,rej)=>{ const t=d.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete=res; t.onerror=()=>rej(t.error); }); }catch(e){ console.warn('Device cache not saved',e); } }
 const plain = o => JSON.parse(JSON.stringify(o)); // drops Firestore classes so IndexedDB can store it
-function saveAdminCache(){ idbSet(ADMIN_CACHE,{ ...adminSync, lastPublished, docs:plain(adminProducts) }); }
+function saveAdminCache(){ idbSet(ADMIN_CACHE,{ ...adminSync, lastPublished, settings:plain(adminSettings), docs:plain(adminProducts) }); }
 const tsPair = v => v ? [v.seconds??0, v.nanoseconds??0] : [0,0];
 const later = (a,b) => (a[0]-b[0]||a[1]-b[1])>0 ? a : b;
 async function syncAdminData(forceFull){
@@ -694,16 +707,17 @@ async function syncAdminData(forceFull){
     const since=new firebase.firestore.Timestamp(cached.syncedAt[0], cached.syncedAt[1]);
     const snap=await db.collection(COL).where('updatedAt','>',since).get();
     const byId=new Map(cached.docs.map(d=>[d.id,d]));
-    let newest=cached.syncedAt, pub=cached.lastPublished??null;
+    let newest=cached.syncedAt, pub=cached.lastPublished??null, settings=cached.settings||{};
     snap.docs.forEach(d=>{ const x=d.data(); newest=later(tsPair(x.updatedAt),newest);
-      if(d.id===SNAP_PREFIX+'meta') pub=x.t; else if(!isSnapshotDoc(d.id)) byId.set(d.id,{id:d.id,...x}); });
-    adminProducts=[...byId.values()]; lastPublished=pub; adminSync={ syncedAt:newest, fullAt:cached.fullAt }; reads=snap.size;
+      if(d.id===SNAP_PREFIX+'meta') pub=x.t; else if(d.id===SETTINGS_ID) settings=x; else if(!isSnapshotDoc(d.id)) byId.set(d.id,{id:d.id,...x}); });
+    adminProducts=[...byId.values()]; lastPublished=pub; adminSettings=settings; adminSync={ syncedAt:newest, fullAt:cached.fullAt }; reads=snap.size;
   } else {
     const snap=await db.collection(COL).get();
     let newest=[0,0];
     snap.docs.forEach(d=>{ newest=later(tsPair(d.data().updatedAt),newest); });
     adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
-    const meta=snap.docs.find(d=>d.id===SNAP_PREFIX+'meta'), s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0);
+    const meta=snap.docs.find(d=>d.id===SNAP_PREFIX+'meta'), s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0), st=snap.docs.find(d=>d.id===SETTINGS_ID);
+    adminSettings = st ? st.data() : {};
     lastPublished = meta ? meta.data().t : s0 ? s0.data().t : null;
     adminSync={ syncedAt:newest, fullAt:Date.now() }; reads=snap.size;
   }
@@ -714,7 +728,7 @@ async function syncAdminData(forceFull){
 }
 async function loadAdminData(forceFull){
   await syncAdminData(forceFull);
-  renderAdminSummary();
+  renderAdminSummary(); renderCats();
 }
 // Reading every product costs ~3,500 Firestore reads, so edits update this list in memory instead of re-reading it.
 function renderAdminSummary(){
@@ -736,7 +750,8 @@ function renderAdminSummary(){
    catalog "dirty" — you publish whenever you're ready via the button.
    ===================================================================== */
 const SNAP_PREFIX='__snapshot_', SNAP_CHUNK=300000; // chars; ≤3 bytes each keeps a doc under 1 MiB
-const isSnapshotDoc = id => String(id).startsWith(SNAP_PREFIX);
+// Ids starting with "__" are app records (catalog snapshot, settings), never products.
+const isSnapshotDoc = id => String(id).startsWith('__');
 async function readSnapshot(){
   const first=await db.collection(COL).doc(SNAP_PREFIX+0).get();
   if(!first.exists) throw new Error('no snapshot published yet');
@@ -753,7 +768,7 @@ function updatePublishUI(){
   // Always available; highlighted when there are edits customers can't see yet.
   b.classList.toggle('primary', pendingPublish>0 || lastPublished===null);
   const n=$('#publishN'); // absent while the button reads "Publishing…"
-  if(n) n.textContent = pendingPublish>0 ? ' '+pendingPublish+' change'+(pendingPublish>1?'s':'') : '';
+  if(n) n.textContent = pendingPublish>0 ? ` (${pendingPublish} change${pendingPublish>1?'s':''})` : '';
   $('#publishedStamp').textContent = lastPublished ? 'Live catalog last published '+timeAgo(lastPublished)
     : lastPublished===null ? 'Not published yet — customers see a slower live list' : '';
 }
@@ -803,7 +818,7 @@ async function regenerateSnapshot(silent, freshList){
     const src=freshList.filter(p=>p.inStock).map(p=>({id:p.id,data:()=>p}));
     const list=combineSchoolShoes(src.map(d=>({id:d.id,...d.data()}))).map(p=>{
       return { id:p.id, displayName:p.displayName||'', rawName:p.rawName||'', brand:p.brand||'', autoBrand:p.autoBrand||'',
-        gender:p.gender||'', autoGender:p.autoGender||'', category:p.category||'', autoCategory:p.autoCategory||'',
+        gender:p.gender||'', autoGender:p.autoGender||'', category:resolveCat(p), autoCategory:'',
         color:p.color||'', colorHint:p.colorHint||'', priceMin:p.priceMin||0, priceMax:p.priceMax||0,
         images:imagesOf(p), mapped:!!p.mapped,
         sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>{ const o={label:s.label,stock:s.stock}; if(s.rate)o.price=s.rate; if(s.priceMax&&s.priceMax!==s.rate)o.priceMax=s.priceMax; if(s.codes)o.codes=s.codes; return o; }),
@@ -878,8 +893,10 @@ function updateBulk(){
 }
 
 const GENDERS=['','Men','Women','Boys','Girls','Kids','Unisex'];
-const CATS=['','Chappals','Sandals','Sliders','Sports Shoes','Sneakers','Formal','Loafers','Crocs','Clogs','Belly','Moccasins','School Shoes','Fancy','Socks','Belts','Wallets','Other'];
-function opts(arr,val){ return arr.map(o=>`<option ${o===val?'selected':''}>${o}</option>`).join(''); }
+// Starting list until staff edit it in Admin → Categories (then it lives in the __settings record).
+const DEFAULT_CATS=['Chappals','Sandals','Sliders','Slippers','Sports Shoes','Sneakers','Formal','Loafers','Crocs','Clogs','Belly','Moccasins',
+  'School Shoes','PVC Shoes','Full Cover Sandals','Hiking Shoes','Fancy','Socks','Belts','Wallets','Other'];
+function opts(arr,val){ const list=val&&!arr.includes(val)?[...arr,val]:arr; return list.map(o=>`<option value="${esc(o)}" ${o===val?'selected':''}>${esc(o)}</option>`).join(''); }
 
 function openMapEditor(id){
   const p=adminProducts.find(x=>x.id===id); if(!p) return;
@@ -908,7 +925,7 @@ function openMapEditor(id){
       </div>
       <div class="two">
         <div class="field"><label>Gender</label><select id="f_gender">${opts(GENDERS,p.gender||p.autoGender||'')}</select></div>
-        <div class="field"><label>Category</label><select id="f_cat">${opts(CATS,p.category||p.autoCategory||'')}</select></div>
+        <div class="field"><label>Category</label><select id="f_cat">${opts(['',...getCategories()],resolveCat(p))}</select></div>
       </div>
       <div class="field"><label>Notes (optional)</label><textarea id="f_notes" rows="2">${esc(p.notes||'')}</textarea></div>
       <div style="display:flex;gap:10px;margin-top:6px">
@@ -957,7 +974,7 @@ function bindBulk(){
       <div class="field"><label>Brand</label><input id="b_brand"></div>
       <div class="two">
         <div class="field"><label>Gender</label><select id="b_gender">${opts(GENDERS,'')}</select></div>
-        <div class="field"><label>Category</label><select id="b_cat">${opts(CATS,'')}</select></div>
+        <div class="field"><label>Category</label><select id="b_cat">${opts(['',...getCategories()],'')}</select></div>
       </div>
       <label style="display:flex;gap:8px;align-items:center;font-size:14px;margin:6px 0 14px"><input type="checkbox" id="b_mark" checked> Mark these as mapped</label>
       <button class="btn primary" id="b_save">Apply to ${selected.size}</button>
@@ -1104,6 +1121,99 @@ function renderIssuesFromDB(){
       <div class="iraw">${p.issues.map(esc).join(' · ')}</div>
     </div></div>`).join('')
     : '<div class="state"><h3>All clear</h3>No in-stock products are missing prices, sizes or names.</div>';
+}
+
+/* =====================================================================
+   CATEGORIES — managed list in the __settings record. A rename rewrites the products that
+   carry that category and records old→new, so categories guessed from billing groups at
+   import (autoCategory) follow the new name too.
+   ===================================================================== */
+const SETTINGS_ID='__settings';
+let adminSettings={};
+function renameCat(c){ const r=adminSettings.renames||{}; for(let i=0;i<5 && c && r[c];i++) c=r[c]; return c||''; }
+function resolveCat(p){ return p.category || renameCat(p.autoCategory) || ''; }
+function getCategories(){
+  const base=adminSettings.categories || DEFAULT_CATS;
+  const used=[...new Set(adminProducts.map(resolveCat).filter(Boolean))].filter(c=>!base.some(b=>b.toLowerCase()===c.toLowerCase()));
+  return [...base, ...used.sort()];
+}
+async function saveSettings(patch){
+  adminSettings={...adminSettings,...patch};
+  await db.collection(COL).doc(SETTINGS_ID).set({...patch,...stamp()},{merge:true});
+  saveAdminCache();
+}
+async function recategorise(from,to){ // rewrite products whose own category is `from`
+  const ids=adminProducts.filter(p=>p.category===from).map(p=>p.id);
+  for(let i=0;i<ids.length;i+=450){
+    const batch=db.batch();
+    ids.slice(i,i+450).forEach(id=>batch.set(db.collection(COL).doc(id),{category:to,...stamp()},{merge:true}));
+    await batch.commit();
+  }
+  adminProducts.forEach(p=>{ if(p.category===from) p.category=to; });
+  const renames={...(adminSettings.renames||{})};
+  for(const k in renames) if(renames[k]===from) renames[k]=to;
+  renames[from]=to; delete renames[to];
+  return {count:ids.length, renames};
+}
+function catUsage(){
+  const u={}; adminProducts.forEach(p=>{ const c=resolveCat(p); if(!c) return; u[c]=u[c]||{all:0,stock:0}; u[c].all++; if(p.inStock) u[c].stock++; });
+  return u;
+}
+function renderCats(){
+  const box=$('#catList'); if(!box) return;
+  const u=catUsage(), cats=getCategories();
+  box.innerHTML=cats.map(c=>`<div class="mrow">
+      <div class="minfo"><div class="mname">${esc(c)}</div>
+        <div class="mmeta">${u[c]?`${u[c].stock} in stock · ${u[c].all} total`:'Not used yet'}</div></div>
+      <button class="btn sm" data-ren="${esc(c)}">Rename</button>
+      <button class="btn sm ghost" data-del="${esc(c)}">Delete</button>
+    </div>`).join('');
+  $$('#catList [data-ren]').forEach(b=>b.onclick=()=>openRenameCat(b.dataset.ren));
+  $$('#catList [data-del]').forEach(b=>b.onclick=()=>openDeleteCat(b.dataset.del));
+}
+function catExists(name,except){ return getCategories().some(c=>c!==except && c.toLowerCase()===name.toLowerCase()); }
+$('#addCat').onclick=async()=>{
+  const name=$('#newCat').value.trim().replace(/\s+/g,' ');
+  if(!name) return;
+  if(catExists(name)){ toast('"'+name+'" already exists',true); return; }
+  await saveSettings({categories:[...getCategories(),name]});
+  $('#newCat').value=''; renderCats(); toast('Added "'+name+'"');
+};
+$('#newCat').onkeydown=e=>{ if(e.key==='Enter') $('#addCat').click(); };
+function openRenameCat(old){
+  openSheet(`<div class="sheet-head"><h2>Rename category</h2><button class="x" onclick="closeSheet()">×</button></div>
+    <div class="sheet-body">
+      <div class="field"><label>New name for "${esc(old)}"</label><input id="renCat" value="${esc(old)}" maxlength="40"></div>
+      <p class="sub">Every product in "${esc(old)}" moves to the new name.</p>
+      <button class="btn primary" id="renSave">Rename</button>
+    </div>`);
+  $('#renSave').onclick=async()=>{
+    const name=$('#renCat').value.trim().replace(/\s+/g,' ');
+    if(!name || name===old){ closeSheet(); return; }
+    if(catExists(name,old)){ toast('"'+name+'" already exists — delete "'+old+'" and move its products there instead',true); return; }
+    $('#renSave').disabled=true; $('#renSave').textContent='Renaming…';
+    const {count,renames}=await recategorise(old,name);
+    await saveSettings({categories:getCategories().map(c=>c===old?name:c), renames});
+    closeSheet(); markDirty(); invalidateClientCache(); saveAdminCache(); renderCats(); renderAdminSummary();
+    toast(`Renamed to "${name}"`+(count?` — ${count} products updated`:'')+'. Publish to show customers.');
+  };
+}
+function openDeleteCat(name){
+  const used=(catUsage()[name]||{}).all||0;
+  const others=getCategories().filter(c=>c!==name);
+  openSheet(`<div class="sheet-head"><h2>Delete "${esc(name)}"</h2><button class="x" onclick="closeSheet()">×</button></div>
+    <div class="sheet-body">
+      ${used?`<div class="field"><label>${used} products use it. Move them to</label><select id="delTo">${opts(others,'')}</select></div>`
+            :`<p class="sub">No products use this category.</p>`}
+      <button class="btn primary" id="delSave">${used?'Move products and delete':'Delete'}</button>
+    </div>`);
+  $('#delSave').onclick=async()=>{
+    $('#delSave').disabled=true;
+    let renames=adminSettings.renames||{};
+    if(used){ renames=(await recategorise(name,$('#delTo').value)).renames; markDirty(); invalidateClientCache(); }
+    await saveSettings({categories:getCategories().filter(c=>c!==name), renames});
+    closeSheet(); saveAdminCache(); renderCats(); renderAdminSummary(); toast('Deleted "'+name+'"');
+  };
 }
 
 /* =====================================================================
@@ -1465,6 +1575,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $$('.tab').forEach(x=>x.classList.remove('on')); t.classList.add('on');
   $$('.tabpane').forEach(p=>p.classList.add('hidden'));
   $('#pane-'+t.dataset.tab).classList.remove('hidden');
+  if(t.dataset.tab==='cats') renderCats();
 });
 
 // client control bindings
