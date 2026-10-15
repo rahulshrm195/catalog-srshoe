@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.8.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.8.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -322,6 +322,7 @@ select.control:focus{border-color:var(--accent)}
   <div id="adminContent" class="hidden">
     <div class="eyebrow">Admin</div>
     <h1 class="page">Catalog control</h1>
+    <div id="staleBanner" class="hidden" style="background:var(--warn-soft);border:1px solid var(--warn);border-radius:11px;padding:10px 14px;margin:0 0 14px;font-size:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"></div>
     <p class="sub" id="adminSub">—</p>
     <p class="sub" style="margin-top:-14px;font-size:12px"><span id="syncNote"></span> · <button class="linkbtn" id="reloadAll" style="padding:2px 4px;font-size:12px">Reload all products</button></p>
     <p class="sub" style="margin-top:-14px;font-family:ui-monospace,monospace;font-size:12px">build v<span id="verStamp"></span></p>
@@ -581,6 +582,7 @@ function bindImport(){
   file.onchange=e=>{ const f=e.target.files[0]; if(f) handleFile(f); };
 }
 async function handleFile(f){
+  if(await checkOutdated()){ toast('Reload the page first — this tab is running an old version',true); return; }
   const prev=$('#importPreview'); prev.classList.remove('hidden');
   prev.innerHTML='<div class="state"><div class="spinner"></div>Reading '+esc(f.name)+'…</div>';
   try{
@@ -759,7 +761,7 @@ async function readSnapshot(){
   for(let i=1;i<of;i++) docs.push(db.collection(COL).doc(SNAP_PREFIX+i).get());
   const all=await Promise.all(docs);
   if(all.some(d=>!d.exists || d.data().t!==t)) throw new Error('snapshot changed while loading');
-  return JSON.parse(all.map(d=>d.data().data).join(''));
+  return { list:JSON.parse(all.map(d=>d.data().data).join('')), t };
 }
 let pendingPublish=0, lastPublished; // undefined until admin data loads; null = never published
 function markDirty(){ pendingPublish++; updatePublishUI(); }
@@ -1220,20 +1222,25 @@ function openDeleteCat(name){
    CLIENT — load in-stock, cache, search / sort / filter
    ===================================================================== */
 let cachedProducts=null, previewMode=false;
-const CACHE_KEY='sr_catalog_cache_v2', CACHE_TTL=6*60*60*1000; // 6h — data only changes via daily import + admin edits, both of which invalidate immediately below
+const CACHE_KEY='sr_catalog_cache_v3', CACHE_TTL=6*60*60*1000; // 6h — data only changes via daily import + admin edits, both of which invalidate immediately below
 function invalidateClientCache(){ cachedProducts=null; try{ localStorage.removeItem(CACHE_KEY); }catch(e){} }
 async function loadClient(){
   const box=$('#clientResults');
   if(!cachedProducts){
-    try{ const c=JSON.parse(localStorage.getItem(CACHE_KEY)||'null'); if(c && Date.now()-c.t<CACHE_TTL){ cachedProducts=c.d; } }catch(e){}
+    let c=null; try{ c=JSON.parse(localStorage.getItem(CACHE_KEY)||'null'); }catch(e){}
+    if(c && c.d){
+      // One tiny read tells us whether a newer catalog was published since this copy was saved.
+      let latest; try{ const m=await db.collection(COL).doc(SNAP_PREFIX+'meta').get(); latest=m.exists?m.data().t:undefined; }catch(e){ latest=null; }
+      if(latest===null || (latest===undefined ? Date.now()-c.t<CACHE_TTL : c.pub===latest)) cachedProducts=c.d;
+    }
   }
   if(!cachedProducts){
     const configured = fbReady && !String(CONFIG.firebase.apiKey).startsWith('PASTE');
     if(configured){
       try{
         // Preferred path: the published snapshot — a few reads per visit.
-        cachedProducts=await readSnapshot();
-        localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),d:cachedProducts}));
+        const snapData=await readSnapshot(); cachedProducts=snapData.list;
+        localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),pub:snapData.t,d:cachedProducts}));
       }catch(snapErr){
         // Fallback: nothing published yet (first run before any import/publish) — direct Firestore query.
         try{
@@ -1556,7 +1563,18 @@ function showClient(){ $('#clientView').classList.remove('hidden'); $('#adminVie
 function showAdmin(){ $('#adminView').classList.remove('hidden'); $('#clientView').classList.add('hidden'); $('#navAdmin').style.color='var(--ink)'; $('#navClient').style.color=''; }
 $('#navClient').onclick=()=>{ showClient(); loadClient(); };
 let adminLoaded=false;
-function ensureAdminData(){ if(adminLoaded) return; adminLoaded=true; loadAdminData().then(renderIssuesFromDB).catch(e=>{ adminLoaded=false; console.error(e); }); }
+/* A tab left open keeps running the version it loaded. Before importing, compare with the live file. */
+async function liveVersion(){
+  try{ const r=await fetch(location.pathname+'?v='+Date.now(),{cache:'no-store'}); const m=(await r.text()).match(/APP_VERSION = "([^"]+)"/); return m?m[1]:null; }catch(e){ return null; }
+}
+async function checkOutdated(){
+  const live=await liveVersion();
+  const old = live && live!==APP_VERSION;
+  $('#staleBanner').classList.toggle('hidden',!old);
+  if(old) $('#staleBanner').innerHTML=`This page is an old version (v${esc(APP_VERSION)}); v${esc(live)} is live. <button class="btn sm primary" onclick="location.reload()">Reload now</button>`;
+  return old;
+}
+function ensureAdminData(){ checkOutdated(); if(adminLoaded) return; adminLoaded=true; loadAdminData().then(renderIssuesFromDB).catch(e=>{ adminLoaded=false; console.error(e); }); }
 $('#navAdmin').onclick=()=>{ showAdmin(); if(sessionStorage.getItem('sr_admin')==='1') ensureAdminData(); };
 
 // admin gate
