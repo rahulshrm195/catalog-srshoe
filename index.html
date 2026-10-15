@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.9.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.10.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -178,6 +178,10 @@ select.control:focus{border-color:var(--accent)}
 .size-cell .n{font-weight:800; font-size:15px}
 .size-cell .s{font-size:11px; color:var(--muted); font-weight:600}
 .size-cell.low .s{color:var(--warn)}
+.riskrow{align-items:flex-start}
+.mrow.riskrow .mname,.mrow.riskrow .mmeta{white-space:normal; overflow:visible}
+.riskrow .sizes{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
+#riskStats .num{font-size:clamp(18px,5.5vw,26px); white-space:nowrap}
 #newCat{border:1px solid var(--line-strong); border-radius:11px; padding:10px 12px; background:var(--surface); color:var(--ink)}
 .size-cell .p{font-size:11px; font-weight:700; margin-top:2px}
 .size-cell .c{font-size:9px; line-height:1.3; color:var(--faint); margin-top:3px}
@@ -334,6 +338,7 @@ select.control:focus{border-color:var(--accent)}
         <button class="tab" data-tab="images">Photos</button>
         <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
         <button class="tab" data-tab="cats">Categories</button>
+        <button class="tab" data-tab="risk">At risk</button>
       </div>
       <button class="btn" id="publishBtn"><span>Publish to catalog<span id="publishN"></span></span></button>
       <span class="sub" id="publishedStamp" style="margin:0"></span>
@@ -405,6 +410,38 @@ select.control:focus{border-color:var(--accent)}
         <button class="btn primary" id="addCat">Add</button>
       </div>
       <div id="catList"></div>
+    </div>
+
+    <!-- AT RISK -->
+    <div class="panel tabpane hidden" id="pane-risk">
+      <h2 style="margin:0 0 4px; font-size:18px">At-risk stock</h2>
+      <p class="sub" style="margin:0 0 4px">Broken size sets and stock that isn't selling — show these first, discount them, or return them before they turn into dead stock.</p>
+      <p class="sub" id="riskTracking" style="margin:0 0 14px;font-size:12px"></p>
+      <div class="stat-row" id="riskStats"></div>
+      <div class="controls" style="margin-bottom:12px;flex-wrap:wrap">
+        <select class="control" id="riskView">
+          <option value="broken">Broken sets (1–2 sizes left)</option>
+          <option value="slow">No sale recently</option>
+          <option value="all">Both</option>
+        </select>
+        <select class="control" id="riskDays">
+          <option value="30">No sale in 30+ days</option>
+          <option value="60">No sale in 60+ days</option>
+          <option value="90" selected>No sale in 90+ days</option>
+        </select>
+        <select class="control" id="riskCat"></select>
+        <select class="control" id="riskGender"></select>
+        <select class="control" id="riskBrand"></select>
+        <select class="control" id="riskSort">
+          <option value="value">Most money tied up</option>
+          <option value="pairs">Most pairs</option>
+          <option value="age">Oldest first</option>
+          <option value="sizes">Fewest sizes left</option>
+        </select>
+        <button class="btn" id="riskCsv">Download list</button>
+      </div>
+      <div id="riskList"></div>
+      <div id="riskMore" style="text-align:center;margin-top:14px"></div>
     </div>
 
     <!-- ISSUES -->
@@ -790,6 +827,7 @@ async function syncAdminData(forceFull){
 async function loadAdminData(forceFull){
   await syncAdminData(forceFull);
   renderAdminSummary(); renderCats();
+  if(!$('#pane-risk').classList.contains('hidden')) renderRisk();
 }
 // Reading every product costs ~3,500 Firestore reads, so edits update this list in memory instead of re-reading it.
 function renderAdminSummary(){
@@ -868,7 +906,9 @@ function combineSchoolShoes(products){
     out.push({ id:'G_'+key, displayName:name, rawName:name, brand:common('brand')||common('autoBrand')||tidyCase(String(ms[0].group||'')),
       gender:common('gender')||common('autoGender')||'Kids', category:'School Shoes', color:colour?COLOR_CODES[colour]:'',
       priceMin:prices.length?Math.min(...prices):0, priceMax:prices.length?Math.max(...prices):0,
-      images:imagesOf(photoFrom), mapped:true, inStock:true, sizes, group_of:ms.map(m=>m.id) });
+      images:imagesOf(photoFrom), mapped:true, inStock:true, sizes, group_of:ms.map(m=>m.id),
+      lastSale:Math.max(0,...ms.map(m=>m.lastSale||0))||undefined, lastIn:Math.max(0,...ms.map(m=>m.lastIn||0))||undefined,
+      firstSeen:ms.every(m=>m.firstSeen)?Math.min(...ms.map(m=>m.firstSeen)):undefined });
   }
   return out;
 }
@@ -1288,6 +1328,86 @@ function openDeleteCat(name){
 }
 
 /* =====================================================================
+   AT RISK — broken size sets and slow movers, worked out from the admin list (no database reads).
+   School shoes are judged per model (all purchase codes together), like customers see them.
+   ===================================================================== */
+const DAY=86400000;
+// "Sparx" + "Sparx SM1117" → "Sparx SM1117"
+function withBrand(p){ const b=tidyCase(p.brand||p.autoBrand||''), n=nameOf(p); return b && !n.toLowerCase().startsWith(b.toLowerCase()) ? b+' '+n : n; }
+let riskShown=40, riskRows=[];
+function riskArticles(){
+  const start=adminSettings.trackingStart, now=Date.now();
+  return combineSchoolShoes(adminProducts.filter(p=>p.inStock)).map(p=>{
+    const live=(p.sizes||[]).filter(s=>s.stock>0);
+    const pairs=live.reduce((a,s)=>a+s.stock,0);
+    const value=live.reduce((a,s)=>a+s.stock*(s.rate||p.priceMin||0),0);
+    const sizeless=live.length>0 && live.every(s=>s.num==null);
+    const saleRef=p.lastSale||start, ageRef=p.firstSeen||start;
+    return { p, live, pairs, value, sizeless,
+      broken: !sizeless && live.length>0 && live.length<=2,
+      noSaleDays: saleRef ? Math.floor((now-saleRef)/DAY) : null,
+      ageDays: ageRef ? Math.floor((now-ageRef)/DAY) : null,
+      sincePre: !p.lastSale, agePre: !p.firstSeen };
+  }).filter(r=>r.pairs>0);
+}
+function riskFilterOptions(rows){
+  const fill=(id,label,vals)=>{ const el=$(id), cur=el.value; el.innerHTML=`<option value="">${label}</option>`+[...new Set(vals.filter(Boolean))].sort().map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join(''); el.value=cur; };
+  fill('#riskCat','All types',rows.map(r=>resolveCat(r.p)));
+  fill('#riskGender','All genders',rows.map(r=>r.p.gender||r.p.autoGender));
+  fill('#riskBrand','All brands',rows.map(r=>tidyCase(r.p.brand||r.p.autoBrand||'')));
+}
+function renderRisk(){
+  const all=riskArticles(); riskFilterOptions(all);
+  const days=+$('#riskDays').value, view=$('#riskView').value;
+  const isSlow=r=>r.noSaleDays!=null && r.noSaleDays>=days;
+  const start=adminSettings.trackingStart, tracked=start?Math.floor((Date.now()-start)/DAY):0;
+  $('#riskTracking').textContent = start
+    ? `Sales tracked for ${tracked} day${tracked===1?'':'s'} (since ${new Date(start).toLocaleDateString('en-IN',{day:'numeric',month:'short'})}). Products here before that count from that day, so "no sale" lists become meaningful once tracking is older than the chosen period.`
+    : 'Sales tracking starts with the next stock import — until then only broken sets can be shown.';
+  const broken=all.filter(r=>r.broken), slow=all.filter(isSlow);
+  const sum=(rs,f)=>rs.reduce((a,r)=>a+f(r),0);
+  $('#riskStats').innerHTML=`
+    <div class="stat iss"><div class="num">${broken.length}</div><div class="lbl">Broken sets</div></div>
+    <div class="stat"><div class="num">${sum(broken,r=>r.pairs)}</div><div class="lbl">Pairs in broken sets</div></div>
+    <div class="stat"><div class="num">${money(Math.round(sum(broken,r=>r.value)))}</div><div class="lbl">Value at MRP</div></div>
+    <div class="stat oos"><div class="num">${start?slow.length:'—'}</div><div class="lbl">No sale in ${days}+ days</div></div>`;
+  const cat=$('#riskCat').value, g=$('#riskGender').value, br=$('#riskBrand').value, sort=$('#riskSort').value;
+  riskRows=all.filter(r=> view==='broken'?r.broken : view==='slow'?isSlow(r) : (r.broken||isSlow(r)))
+    .filter(r=>(!cat||resolveCat(r.p)===cat) && (!g||(r.p.gender||r.p.autoGender)===g) && (!br||tidyCase(r.p.brand||r.p.autoBrand||'')===br));
+  const by={ value:(a,b)=>b.value-a.value, pairs:(a,b)=>b.pairs-a.pairs, age:(a,b)=>(b.ageDays||0)-(a.ageDays||0)||b.value-a.value, sizes:(a,b)=>a.live.length-b.live.length||b.value-a.value };
+  riskRows.sort(by[sort]);
+  const box=$('#riskList');
+  box.innerHTML = riskRows.length ? riskRows.slice(0,riskShown).map(r=>{
+    const p=r.p, img=imagesOf(p)[0];
+    const sizes=r.live.map(s=>`<span class="sz">${esc(s.label)}${s.stock>1?' ×'+s.stock:''}</span>`).join('');
+    const sale = r.noSaleDays==null ? '' : r.sincePre ? `no sale in ${r.noSaleDays}+ days` : (r.noSaleDays===0?'sold today':`last sale ${r.noSaleDays} days ago`);
+    const codes = p.group_of ? p.group_of.length+' purchase codes' : p.id;
+    return `<div class="mrow riskrow">
+      <div class="mthumb">${img?`<img src="${esc(img)}" loading="lazy">`:''}</div>
+      <div class="minfo">
+        <div class="mname">${esc(withBrand(p))}</div>
+        <div class="mmeta">${esc(codes)} · ${esc(resolveCat(p)||'No type')} · ${r.pairs} pair${r.pairs>1?'s':''} · ${money(Math.round(r.value))}${sale?' · '+sale:''}</div>
+        <div class="sizes" style="margin-top:6px">${r.broken?`<span class="tag noimg">${r.live.length} size${r.live.length>1?'s':''} left</span>`:''}${sizes}</div>
+      </div>
+      ${p.group_of?'':`<button class="btn sm riskOpen" data-id="${esc(p.id)}">Edit</button>`}
+    </div>`;
+  }).join('') : `<div class="state">${view==='broken'?'No broken size sets.':'Nothing here yet.'}</div>`;
+  $('#riskMore').innerHTML = riskRows.length>riskShown ? `<button class="btn" id="riskMoreBtn">Show more (${riskRows.length-riskShown} left)</button>` : '';
+  if($('#riskMoreBtn')) $('#riskMoreBtn').onclick=()=>{ riskShown+=40; renderRisk(); };
+  $$('.riskOpen').forEach(b=>b.onclick=()=>openMapEditor(b.dataset.id));
+}
+['#riskView','#riskDays','#riskCat','#riskGender','#riskBrand','#riskSort'].forEach(id=>$(id).onchange=()=>{ riskShown=40; renderRisk(); });
+$('#riskCsv').onclick=()=>{
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const lines=[['Codes','Brand','Name','Type','Gender','Sizes left','Pairs','Value at MRP','Last sale','In catalog since'].map(q).join(',')];
+  const d=t=>t?new Date(t).toLocaleDateString('en-IN'):'';
+  riskRows.forEach(r=>{ const p=r.p; lines.push([ (p.group_of||[p.id]).join(' '), tidyCase(p.brand||p.autoBrand||''), withBrand(p), resolveCat(p), p.gender||p.autoGender||'',
+    r.live.map(s=>s.label+':'+s.stock).join(' '), r.pairs, Math.round(r.value), p.lastSale?d(p.lastSale):(r.noSaleDays!=null?'none since '+d(adminSettings.trackingStart):''), d(p.firstSeen||adminSettings.trackingStart) ].map(q).join(',')); });
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv'}));
+  a.download='SR-Shoes-at-risk-'+new Date().toISOString().slice(0,10)+'.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
+
+/* =====================================================================
    CLIENT — load in-stock, cache, search / sort / filter
    ===================================================================== */
 let cachedProducts=null, previewMode=false;
@@ -1663,6 +1783,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $$('.tabpane').forEach(p=>p.classList.add('hidden'));
   $('#pane-'+t.dataset.tab).classList.remove('hidden');
   if(t.dataset.tab==='cats') renderCats();
+  if(t.dataset.tab==='risk') renderRisk();
 });
 
 // client control bindings
