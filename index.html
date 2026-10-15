@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.10.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.11.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -104,6 +104,14 @@ select.control:focus{border-color:var(--accent)}
 .filterbar{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px; align-items:center}
 .chip{border:1px solid var(--line-strong); background:var(--surface); color:var(--muted);
   padding:6px 12px; border-radius:999px; font-size:13px; font-weight:600}
+.brand{white-space:nowrap}
+@media (max-width:440px){ .topbar-inner{gap:6px; padding:10px 12px} .brand small{display:none} .linkbtn{padding:8px 6px} }
+.chip.big{font-size:16px; padding:10px 16px; min-width:52px}
+.chip.big small{font-size:11px; opacity:.7; margin-left:4px}
+.fgroup.sales-step .chips{max-height:none; overflow:visible}
+.sbadges{display:flex; flex-wrap:wrap; gap:4px; margin-bottom:6px}
+.sbadge{font-size:10px; font-weight:700; padding:3px 7px; border-radius:6px; background:var(--danger-soft); color:var(--danger)}
+.sbadge.muted{background:var(--bg); color:var(--muted)}
 .chip.on{background:var(--accent); border-color:var(--accent); color:#fff}
 .chip.size{min-width:40px; text-align:center}
 .count{color:var(--faint); font-size:13px; font-weight:600; margin-left:auto}
@@ -275,6 +283,7 @@ select.control:focus{border-color:var(--accent)}
   <div class="topbar-inner">
     <div class="brand"><span class="mark">SR</span><div>SR Shoes<br><small>Catalog</small></div></div>
     <div class="spacer"></div>
+    <button class="linkbtn hidden" id="navSales">Salesman</button>
     <button class="linkbtn" id="navClient">Catalog</button>
     <button class="linkbtn" id="navAdmin">Admin</button>
   </div>
@@ -310,6 +319,15 @@ select.control:focus{border-color:var(--accent)}
 </div>
 
 <!-- ==================== ADMIN ==================== -->
+<div class="wrap hidden" id="salesView">
+  <div class="eyebrow">Salesman</div>
+  <h1 class="page">Find every pair for your customer</h1>
+  <p class="sub">Pick who it's for and their size — you'll see everything we have, with the stock to sell first on top.</p>
+  <div id="salesCrumbs" class="filterbar" style="margin-top:6px"></div>
+  <div id="salesStep"></div>
+  <div id="salesResults"></div>
+</div>
+
 <div class="wrap hidden" id="adminView">
   <!-- PIN gate -->
   <div id="pinGate">
@@ -519,16 +537,40 @@ function autoBrand(group,name){
   return '';
 }
 function autoGender(group,sub){
-  const s=(group+' '+sub).toLowerCase();
-  if(/\bgirls?\b|^gr/.test(s)) return 'Girls';
-  if(/\bboys?\b|^b_/.test(s)) return 'Boys';
-  if(/\bkids?\b|school|^kd|^k_/.test(s)) return 'Kids';
-  if(/wom[ae]n|ladies|^l_/.test(s)) return 'Women';
-  if(/\bmens?\b|gents|^g_/.test(s)) return 'Men';
+  // Sub-group codes start with who it's for: G_ gents · L_ ladies · B_ boys · GR_/GS_ girls · KD_/K_ kids.
+  // (The prefix must be read from the sub-group itself — the group is usually the brand.)
+  const sg=String(sub||'').trim().toUpperCase();
+  if(/^(GR|GS)_/.test(sg)) return 'Girls';
+  if(/^B_/.test(sg)) return 'Boys';
+  if(/^(KD|K)_/.test(sg) || /_SCHOOLSHOES$/.test(sg)) return 'Kids';
+  if(/^L_/.test(sg)) return 'Women';
+  if(/^G_/.test(sg)) return 'Men';
+  const s=String(group||'').toLowerCase();   // older items: the group name says it ("Womens Chappals")
+  if(/\bgirls?\b/.test(s)) return 'Girls';
+  if(/\bboys?\b/.test(s)) return 'Boys';
+  if(/\bkids?\b|school/.test(s)) return 'Kids';
+  if(/wom[ae]n|womes|ladies/.test(s)) return 'Women';
+  if(/\bmens?\b|gents/.test(s)) return 'Men';
+  return '';
+}
+// Type from the sub-group code after the gender prefix (C chappals, SS sports shoes, SD sandals …).
+const SUB_TYPES=[[/^FC_SD/,'Full Cover Sandals'],[/^PVC/,'PVC Shoes'],[/^C_SLD/,'Sliders'],[/^SLD/,'Sliders'],[/^SL(_|$)/,'Slippers'],
+  [/^SS(_|$)/,'Sports Shoes'],[/^SN(_|$)/,'Sneakers'],[/^SD(_|$)/,'Sandals'],[/^CLG/,'Clogs'],[/^CR(_|$)/,'Crocs'],[/^LOFF/,'Loafers'],
+  [/^F(_|$)/,'Formal'],[/^(C|D_C|V_C)(_|$)/,'Chappals']];
+function subType(sub){
+  const sg=String(sub||'').trim().toUpperCase();
+  if(!sg) return '';
+  if(/_SCHOOLSHOES$/.test(sg)) return 'School Shoes';
+  if(/SOCKS/.test(sg)) return 'Socks';
+  if(/^BELT/.test(sg)) return 'Belts';
+  if(/^WALLET/.test(sg)) return 'Wallets';
+  const rest=sg.replace(/^(GR|GS|KD|G|L|B|K)_/,'');
+  for(const [re,t] of SUB_TYPES) if(re.test(rest)) return t;
   return '';
 }
      // more categories to be added to this function Slipper, Rainy Shoes, Full Cover Shoes, Trekking Shoes, Polish
-function autoCategory(group){
+function autoCategory(group,sub){
+  const fromSub=subType(sub); if(fromSub) return fromSub;
   const g=String(group||'').toLowerCase();
   const map=[['chappal','Chappals'],['sport','Sports Shoes'],['sandal','Sandals'],['sandle','Sandals'],['formal','Formal'],['slider','Sliders'],['slid','Sliders'],['crock','Crocs'],['crock','Crocs'],['loafer','Loafers'],['belly','Belly'],['sneaker','Sneakers'],['sock','Socks'],['school','School Shoes'],['clog','Clogs'],['fancy','Fancy'],['moccas','Moccasins'],['belt','Belts'],['wallet','Wallets']];
   for(const [k,v] of map) if(g.includes(k)) return v;
@@ -613,7 +655,7 @@ function parseWorkbook(wb){
       base:p.base, rawName:p.rawName, group:p.group, subGroup:p.subGroup,
       sizes, totalStock, inStock: totalStock>0, priceMin, priceMax,
       autoBrand:autoBrand(p.group,p.rawName), autoGender:autoGender(p.group,p.subGroup),
-      autoCategory:autoCategory(p.group), colorHint:[...p._colorHints][0]||'', issues
+      autoCategory:autoCategory(p.group,p.subGroup), colorHint:[...p._colorHints][0]||'', issues
     });
   }
   return products;
@@ -854,11 +896,11 @@ const isSnapshotDoc = id => String(id).startsWith('__');
 async function readSnapshot(){
   const first=await db.collection(COL).doc(SNAP_PREFIX+0).get();
   if(!first.exists) throw new Error('no snapshot published yet');
-  const {of,t}=first.data(), docs=[first];
+  const {of,t,ts}=first.data(), docs=[first];
   for(let i=1;i<of;i++) docs.push(db.collection(COL).doc(SNAP_PREFIX+i).get());
   const all=await Promise.all(docs);
   if(all.some(d=>!d.exists || d.data().t!==t)) throw new Error('snapshot changed while loading');
-  return { list:JSON.parse(all.map(d=>d.data().data).join('')), t };
+  return { list:JSON.parse(all.map(d=>d.data().data).join('')), t, ts:ts||null };
 }
 let pendingPublish=0, lastPublished; // undefined until admin data loads; null = never published
 function markDirty(){ pendingPublish++; updatePublishUI(); }
@@ -923,14 +965,15 @@ async function regenerateSnapshot(silent, freshList){
         color:p.color||'', colorHint:p.colorHint||'', priceMin:p.priceMin||0, priceMax:p.priceMax||0,
         images:imagesOf(p), mapped:!!p.mapped,
         sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>{ const o={label:s.label,stock:s.stock}; if(s.rate)o.price=s.rate; if(s.priceMax&&s.priceMax!==s.rate)o.priceMax=s.priceMax; if(s.codes)o.codes=s.codes; return o; }),
-        ...(p.group_of?{group_of:p.group_of}:{}) };
+        ...(p.group_of?{group_of:p.group_of}:{}), ...(p.lastSale?{ls:p.lastSale}:{}), ...(p.firstSeen?{fs:p.firstSeen}:{}) };
     });
     // Split into chunks well under Firestore's 1 MiB doc limit, written in one atomic batch.
     const json=JSON.stringify(list), parts=[];
     for(let i=0;i<json.length;i+=SNAP_CHUNK) parts.push(json.slice(i,i+SNAP_CHUNK));
     const prev=await db.collection(COL).doc(SNAP_PREFIX+'meta').get();
     const prevN=prev.exists?(prev.data().of||0):3, t=Date.now(), batch=db.batch();
-    parts.forEach((data,i)=>batch.set(db.collection(COL).doc(SNAP_PREFIX+i),{snapshot:true,part:i,of:parts.length,t,data}));
+    const ts=adminSettings.trackingStart||null;
+    parts.forEach((data,i)=>batch.set(db.collection(COL).doc(SNAP_PREFIX+i),{snapshot:true,part:i,of:parts.length,t,ts,data}));
     for(let i=parts.length;i<prevN;i++) batch.delete(db.collection(COL).doc(SNAP_PREFIX+i));
     batch.set(db.collection(COL).doc(SNAP_PREFIX+'meta'),{t,of:parts.length,...stamp()}); // tiny doc so admins learn the publish time cheaply
     await batch.commit();
@@ -1408,9 +1451,92 @@ $('#riskCsv').onclick=()=>{
 };
 
 /* =====================================================================
+   SALESMAN — guided search: for whom → size → type. Every in-stock article in that size is listed,
+   stock to sell first on top (broken sets, last pair in the size, no recent sale). Staff devices only.
+   ===================================================================== */
+const FOR=[{k:'Men',inc:['Men','Unisex']},{k:'Women',inc:['Women','Unisex']},{k:'Boys',inc:['Boys','Kids','Unisex']},
+           {k:'Girls',inc:['Girls','Kids','Unisex']},{k:'Kids',inc:['Kids','Boys','Girls','Unisex']}];
+let sales={ who:'', size:'', type:'' };
+function markStaffDevice(){ try{ localStorage.setItem('sr_staff','1'); }catch(e){} $('#navSales').classList.remove('hidden'); }
+try{ if(localStorage.getItem('sr_staff')==='1' || sessionStorage.getItem('sr_admin')==='1') $('#navSales').classList.remove('hidden'); }catch(e){}
+const sizeKey = label => ({label, num: parseFloat(label)});
+const REAL_SIZE=/^(\d+(\.\d+)?K?|\d+XL|XS|S|M|L|XL|XXL)$/i;
+const sizeBucket = label => REAL_SIZE.test(String(label).trim()) ? String(label).trim() : 'Free size';
+function salesPool(){ // products for the chosen customer + those with no gender set (shown last, never skipped)
+  const f=FOR.find(x=>x.k===sales.who);
+  return (cachedProducts||[]).map(p=>{ const g=genderOf(p); return {p, known:!!g, ok:!g || f.inc.includes(g)}; }).filter(x=>x.ok);
+}
+function salesScore(p, size){
+  const live=(p.sizes||[]).filter(s=>s.stock>0), here=live.find(s=>sizeBucket(s.label)===size);
+  const ref=p.ls||trackingStartPub, days=ref?Math.floor((Date.now()-ref)/86400000):null;
+  const b=[]; let score=0;
+  if(here && here.stock===1 && live.length>0){ b.push(`Last pair in size ${size}`); score+=2; }
+  if(live.length<=2 && !live.every(s=>!/\d/.test(s.label))){ b.push(`Only ${live.length} size${live.length>1?'s':''} left`); score+=3; }
+  if(days!=null && days>=30){ b.push(`No sale ${days>=90?'90':days>=60?'60':'30'}+ days`); score+= days>=90?3:days>=60?2:1; }
+  return {score, badges:b, here};
+}
+function salesCrumbs(){
+  const c=[];
+  if(sales.who) c.push(`<span class="af-chip">${esc(sales.who)} <button data-s="who">×</button></span>`);
+  if(sales.size) c.push(`<span class="af-chip">Size ${esc(sales.size)} <button data-s="size">×</button></span>`);
+  if(sales.type) c.push(`<span class="af-chip">${esc(sales.type)} <button data-s="type">×</button></span>`);
+  $('#salesCrumbs').innerHTML=c.join('')+(c.length?'<button class="af-clear" id="salesReset">Start again</button>':'');
+  $$('#salesCrumbs [data-s]').forEach(b=>b.onclick=()=>{ const k=b.dataset.s; if(k==='who'){sales={who:'',size:'',type:''};} else if(k==='size'){sales.size='';sales.type='';} else sales.type=''; renderSales(); });
+  if($('#salesReset')) $('#salesReset').onclick=()=>{ sales={who:'',size:'',type:''}; renderSales(); };
+}
+function stepHTML(title, items){ // items: [{v,label,n}]
+  return `<div class="fgroup sales-step"><h4>${esc(title)}</h4><div class="chips">${items.map(i=>
+    `<button class="chip big" data-v="${esc(i.v)}">${esc(i.label)}${i.n!=null?` <small>${i.n}</small>`:''}</button>`).join('')}</div></div>`;
+}
+function renderSales(){
+  salesCrumbs();
+  const step=$('#salesStep'), out=$('#salesResults'); out.innerHTML='';
+  if(!cachedProducts){ step.innerHTML='<div class="state"><div class="spinner"></div>Loading stock…</div>'; return; }
+  if(!sales.who){
+    step.innerHTML=stepHTML('Who is it for?', FOR.map(f=>({v:f.k,label:f.k})));
+    $$('#salesStep .chip').forEach(b=>b.onclick=()=>{ sales.who=b.dataset.v; renderSales(); }); return;
+  }
+  const pool=salesPool();
+  if(!sales.size){
+    const n={}; pool.forEach(({p})=>{ const seen=new Set(); (p.sizes||[]).forEach(s=>{ const k=sizeBucket(s.label); if(s.stock>0 && !seen.has(k)){ seen.add(k); n[k]=(n[k]||0)+1; } }); });
+    const sizes=Object.keys(n).map(sizeKey).sort(sizeOrder);
+    step.innerHTML=stepHTML('Customer\'s size', sizes.map(s=>({v:s.label,label:s.label,n:n[s.label]})))+
+      '<p class="sub" style="font-size:12px">The small number is how many articles we have in that size.</p>';
+    $$('#salesStep .chip').forEach(b=>b.onclick=()=>{ sales.size=b.dataset.v; renderSales(); }); return;
+  }
+  const inSize=pool.filter(({p})=>(p.sizes||[]).some(s=>sizeBucket(s.label)===sales.size && s.stock>0));
+  const t={}; inSize.forEach(({p})=>{ const c=catOf(p)||'Other'; t[c]=(t[c]||0)+1; });
+  step.innerHTML=stepHTML('Type', [{v:'',label:'All',n:inSize.length}, ...Object.keys(t).sort().map(c=>({v:c,label:c,n:t[c]}))]);
+  $$('#salesStep .chip').forEach(b=>{ if(b.dataset.v===sales.type) b.classList.add('on'); b.onclick=()=>{ sales.type=b.dataset.v; renderSales(); }; });
+  const rows=inSize.filter(({p})=>!sales.type || (catOf(p)||'Other')===sales.type)
+    .map(x=>({...x, ...salesScore(x.p, sales.size)}))
+    .sort((a,b)=>(b.known-a.known) || b.score-a.score || (a.p.ls||0)-(b.p.ls||0) || nameOf(a.p).localeCompare(nameOf(b.p)));
+  const first=rows.filter(r=>r.score>0 && r.known).length;
+  out.innerHTML = `<div class="count" style="margin:4px 0 10px">${rows.length} article${rows.length===1?'':'s'} in size ${esc(sales.size)}${first?` · <b style="color:var(--danger)">${first} to sell first</b>`:''}</div>`
+    + (rows.length? `<div class="grid">${rows.map(salesCard).join('')}</div>` : '<div class="state">Nothing in this size.</div>');
+  $$('#salesResults .card').forEach(c=>c.onclick=()=>openDetail(c.dataset.id));
+}
+function salesCard(r){
+  const p=r.p, img=imagesOf(p)[0], h=r.here||{};
+  const price=h.price?money(h.price)+(h.priceMax?'–'+Number(h.priceMax):''):(p.priceMin?money(p.priceMin):'—');
+  const codes=h.codes?h.codes.join(', '):p.id;
+  const badges=[...r.badges.map(b=>`<span class="sbadge">${esc(b)}</span>`), ...(!r.known?['<span class="sbadge muted">Gender not set</span>']:[])].join('');
+  return `<div class="card" data-id="${esc(p.id)}">
+    <div class="thumb">${img?`<img src="${esc(img)}" loading="lazy" alt="">`:'<div class="ph"><span>No photo</span></div>'}</div>
+    <div class="card-body">
+      ${badges?`<div class="sbadges">${badges}</div>`:''}
+      ${brandOf(p)?`<div class="card-brand">${esc(brandOf(p))}</div>`:''}
+      <div class="card-name">${esc(nameOf(p))}</div>
+      <div class="card-price">${price}</div>
+      <div class="sub" style="margin:4px 0 0;font-size:12px"><b>Size ${esc(sales.size)}: ${Number(h.stock)||0} pair${h.stock>1?'s':''}</b> · ${esc(codes)}</div>
+    </div></div>`;
+}
+$('#navSales').onclick=async()=>{ showView('sales'); renderSales(); if(!cachedProducts){ await loadClient(); renderSales(); } };
+
+/* =====================================================================
    CLIENT — load in-stock, cache, search / sort / filter
    ===================================================================== */
-let cachedProducts=null, previewMode=false;
+let cachedProducts=null, previewMode=false, trackingStartPub=null;
 const CACHE_KEY='sr_catalog_cache_v3', CACHE_TTL=6*60*60*1000; // 6h — data only changes via daily import + admin edits, both of which invalidate immediately below
 function invalidateClientCache(){ cachedProducts=null; try{ localStorage.removeItem(CACHE_KEY); }catch(e){} }
 async function loadClient(){
@@ -1420,7 +1546,7 @@ async function loadClient(){
     if(c && c.d){
       // One tiny read tells us whether a newer catalog was published since this copy was saved.
       let latest; try{ const m=await db.collection(COL).doc(SNAP_PREFIX+'meta').get(); latest=m.exists?m.data().t:undefined; }catch(e){ latest=null; }
-      if(latest===null || (latest===undefined ? Date.now()-c.t<CACHE_TTL : c.pub===latest)) cachedProducts=c.d;
+      if(latest===null || (latest===undefined ? Date.now()-c.t<CACHE_TTL : c.pub===latest)){ cachedProducts=c.d; trackingStartPub=c.ts||null; }
     }
   }
   if(!cachedProducts){
@@ -1428,8 +1554,8 @@ async function loadClient(){
     if(configured){
       try{
         // Preferred path: the published snapshot — a few reads per visit.
-        const snapData=await readSnapshot(); cachedProducts=snapData.list;
-        localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),pub:snapData.t,d:cachedProducts}));
+        const snapData=await readSnapshot(); cachedProducts=snapData.list; trackingStartPub=snapData.ts;
+        localStorage.setItem(CACHE_KEY,JSON.stringify({t:Date.now(),pub:snapData.t,ts:snapData.ts,d:cachedProducts}));
       }catch(snapErr){
         // Fallback: nothing published yet (first run before any import/publish) — direct Firestore query.
         try{
@@ -1748,8 +1874,13 @@ function openSheet(html, drawer){ const s=$('#sheet'); s.className='sheet'+(draw
 function closeSheet(){ $('#overlay').classList.remove('show'); }
 $('#overlay').onclick=e=>{ if(e.target.id==='overlay') closeSheet(); };
 
-function showClient(){ $('#clientView').classList.remove('hidden'); $('#adminView').classList.add('hidden'); $('#navClient').style.color='var(--ink)'; $('#navAdmin').style.color=''; }
-function showAdmin(){ $('#adminView').classList.remove('hidden'); $('#clientView').classList.add('hidden'); $('#navAdmin').style.color='var(--ink)'; $('#navClient').style.color=''; }
+function showView(name){
+  [['client','#clientView','#navClient'],['admin','#adminView','#navAdmin'],['sales','#salesView','#navSales']].forEach(([n,v,b])=>{
+    $(v).classList.toggle('hidden',n!==name); $(b).style.color = n===name ? 'var(--ink)' : '';
+  });
+}
+function showClient(){ showView('client'); }
+function showAdmin(){ showView('admin'); }
 $('#navClient').onclick=()=>{ showClient(); loadClient(); };
 let adminLoaded=false;
 /* A tab left open keeps running the version it loaded. Before importing, compare with the live file. */
@@ -1769,7 +1900,7 @@ $('#navAdmin').onclick=()=>{ showAdmin(); if(sessionStorage.getItem('sr_admin')=
 // admin gate
 function tryUnlock(){
   if($('#pinInput').value===CONFIG.adminPin){
-    sessionStorage.setItem('sr_admin','1'); $('#pinGate').classList.add('hidden'); $('#adminContent').classList.remove('hidden');
+    sessionStorage.setItem('sr_admin','1'); markStaffDevice(); $('#pinGate').classList.add('hidden'); $('#adminContent').classList.remove('hidden');
     ensureAdminData();
   } else toast('Wrong PIN',true);
 }
