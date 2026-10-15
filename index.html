@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.6.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.7.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -178,6 +178,8 @@ select.control:focus{border-color:var(--accent)}
 .size-cell .n{font-weight:800; font-size:15px}
 .size-cell .s{font-size:11px; color:var(--muted); font-weight:600}
 .size-cell.low .s{color:var(--warn)}
+.size-cell .p{font-size:11px; font-weight:700; margin-top:2px}
+.size-cell .c{font-size:9px; line-height:1.3; color:var(--faint); margin-top:3px}
 
 /* ---------- Admin ---------- */
 .tabs{display:flex; gap:4px; background:var(--surface); border:1px solid var(--line); padding:4px; border-radius:12px; width:fit-content; flex-wrap:wrap}
@@ -435,7 +437,10 @@ const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>'
 function toast(msg, err){ const t=$('#toast'); t.textContent=msg; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',2600); }
 
 /* ---------- Parsing helpers (mirror validated logic) ---------- */
-const baseCode = code => String(code).trim().replace(/X[\d.]+$/i,'');
+// Code = article + "X" + size: N6246X9 · N6246X9K (kids) · N7382X11XL · N6867XS
+const baseCode = code => String(code).trim().replace(/X(\d+(\.\d+)?(K|XL)?|XXL|XL|[SML])$/i,'');
+// Kids sizes (…K) come before the regular run 1, 2, 3 …
+const sizeOrder = (a,b) => (/K$/i.test(b.label)-/K$/i.test(a.label)) || (a.num??999)-(b.num??999) || String(a.label).localeCompare(b.label);
 function parseSize(desc){
   const d = String(desc??'').trim();
   const m = d.match(/(\d+(?:\.\d+)?)(\s*K)?\s*$/i);        // trailing number, optional K (kids)
@@ -497,7 +502,7 @@ function parseWorkbook(wb){
     const r=rows[i]; const code=String(r[cCode]??'').trim();
     if(!code) continue;
     const base=baseCode(code);
-    const stock=Math.round(toNum(r[cStock]));
+    const rawStock=Math.round(toNum(r[cStock])), stock=Math.max(0,rawStock);
     const rate=toNum(r[cRate]);
     const sz=parseSize(r[cDesc]);
     const name=String(r[cName]??'').trim();
@@ -506,7 +511,7 @@ function parseWorkbook(wb){
         subGroup:String(r[cSub]??'').trim(), sizes:[], _colorHints:new Set() });
     }
     const p=map.get(base);
-    p.sizes.push({ code, label:sz.label, num:sz.num, stock, rate, color:sz.color });
+    p.sizes.push({ code, label:sz.label, num:sz.num, stock, rate, color:sz.color, negative:rawStock<0 });
     if(sz.color) p._colorHints.add(sz.color);
   }
 
@@ -524,14 +529,21 @@ function parseWorkbook(wb){
       if(bad.length) issues.push('Unclear size: '+bad.map(s=>'"'+s.label+'"').join(', '));
       if(!p.rawName) issues.push('Missing product name');
     }
+    const neg=p.sizes.filter(s=>s.negative);
+    if(neg.length) issues.push('Negative stock in billing (counted as 0): '+neg.map(s=>s.label).join(', '));
     // clean sizes for storage (dedupe by label, sum stock)
     const byLabel=new Map();
     for(const s of p.sizes){
       const k=s.label;
-      if(!byLabel.has(k)) byLabel.set(k,{label:s.label,num:s.num,stock:0});
+      if(!byLabel.has(k)) byLabel.set(k,{label:s.label,num:s.num,stock:0,rate:0});
       byLabel.get(k).stock+=s.stock;
     }
-    const sizes=[...byLabel.values()].sort((a,b)=>(a.num??999)-(b.num??999)||String(a.label).localeCompare(b.label));
+    // price per size: lowest rate among the rows that have stock (else among all rows)
+    for(const b of byLabel.values()){
+      const rows=p.sizes.filter(s=>s.label===b.label && s.rate>0), live=rows.filter(s=>s.stock>0);
+      const pick=(live.length?live:rows).map(s=>s.rate); if(pick.length) b.rate=Math.min(...pick);
+    }
+    const sizes=[...byLabel.values()].sort(sizeOrder);
     products.push({
       base:p.base, rawName:p.rawName, group:p.group, subGroup:p.subGroup,
       sizes, totalStock, inStock: totalStock>0, priceMin, priceMax,
@@ -575,9 +587,20 @@ async function handleFile(f){
       if(!ex){ nNew++; return true; }
       const diff=fileDiffers(p,ex); if(diff) nUpd++; return diff;
     });
+    // Before v1.7 kids sizes were split off (N6246X9K was its own product). Move their photos and
+    // mapping onto the merged article when it has none, so nothing staff entered is lost.
+    const carry=new Map();
+    for(const [id,d] of existing){
+      const to=baseCode(id); if(to===id || !parsedBases.has(to)) continue;
+      const t={...(existing.get(to)||{}), ...(carry.get(to)||{})}, c={};
+      const has=v=>Array.isArray(v)?v.length>0:!!v;
+      for(const k of BRAIN_FIELDS) if(has(d[k]) && !has(t[k])) c[k]=d[k];
+      if(Object.keys(c).length) carry.set(to,{...(carry.get(to)||{}),...c});
+    }
+    carry.forEach((c,base)=>{ const p=parsed.find(x=>x.base===base); if(p && !changed.includes(p)){ changed.push(p); nUpd++; } });
     const goingOOS=[...existing.entries()].filter(([id,d])=>d.inStock && !parsedBases.has(id)).map(([id])=>id);
     const issues=parsed.filter(p=>p.issues && p.issues.length);
-    pendingImport={ parsed:changed, goingOOS, issues, fileName:f.name, existing, unchanged:parsed.length-changed.length };
+    pendingImport={ parsed:changed, carry, goingOOS, issues, fileName:f.name, existing, unchanged:parsed.length-changed.length };
     renderImportPreview(nNew,nUpd,goingOOS.length,issues.length,parsed.length-changed.length);
   }catch(err){
     console.error(err);
@@ -604,14 +627,14 @@ function renderImportPreview(nNew,nUpd,nOOS,nIss,nSame){
 }
 async function applyImport(){
   if(!pendingImport) return;
-  const {parsed,goingOOS,existing}=pendingImport;
+  const {parsed,goingOOS,existing,carry}=pendingImport;
   $('#applyImport').disabled=true; $('#cancelImport').disabled=true;
   $('#applyProgress').classList.remove('hidden');
   const ops=[]; // {ref, data}
   parsed.forEach(p=>{
     const {base,...rest}=p; const {colorHint,...fileFields}=rest;
     if(!base) return; // skip any row that produced an empty product code
-    ops.push({ref:db.collection(COL).doc(base), data:{ ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }});
+    ops.push({ref:db.collection(COL).doc(base), data:{ ...(carry.get(base)||{}), ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }});
   });
   goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }}));
   const CH=400; let done=0;
@@ -629,7 +652,7 @@ async function applyImport(){
     pendingImport=null;
     invalidateClientCache();
     // `existing` was read moments ago; apply what we just wrote instead of reading ~3,500 products again.
-    parsed.forEach(p=>{ const {base,...f}=p; existing.set(base,{...(existing.get(base)||{}),...f}); });
+    parsed.forEach(p=>{ const {base,...f}=p; existing.set(base,{...(existing.get(base)||{}),...(carry.get(base)||{}),...f}); });
     goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0}));
     adminProducts=[...existing.entries()].map(([id,d])=>({id,...d})); adminLoaded=true; saveAdminCache();
     renderAdminSummary(); renderIssuesFromDB();
@@ -651,6 +674,7 @@ let adminProducts=[];
 /* Each device keeps a copy of all products (IndexedDB) and on open reads only the products changed
    since its last sync — every write stamps updatedAt. A full read happens on a device's first open,
    once a week, or with "Reload all products". */
+const BRAIN_FIELDS=['displayName','brand','gender','category','color','notes','mapped','images','imageUrl'];
 const stamp = () => ({ updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
 const ADMIN_CACHE='admin_products_v1', FULL_EVERY=7*24*3600*1000;
 // syncedAt = newest updatedAt seen, as [seconds, nanoseconds]. Firestore commits are atomic and in time order,
@@ -738,18 +762,52 @@ function timeAgo(ts){
   if(s<60) return 'just now'; if(s<3600) return Math.floor(s/60)+'m ago';
   if(s<86400) return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago';
 }
+/* School shoes are bought lot by lot, and every lot gets a new code (Candy Black is N6246, N6030, N6258…).
+   Customers should see one card per model, so products whose sub-group ends in _SCHOOLSHOES are combined
+   by brand + sub-group: sizes merged, a price per size, and the codes kept so staff can find the box. */
+function combineSchoolShoes(products){
+  const groups=new Map(), out=[];
+  for(const p of products){
+    const sg=String(p.subGroup||'').trim();
+    if(!/_SCHOOLSHOES$/i.test(sg)){ out.push(p); continue; }
+    const key=(String(p.group||'').trim()+'_'+sg).toUpperCase();
+    if(!groups.has(key)) groups.set(key,[]); groups.get(key).push(p);
+  }
+  for(const [key,ms] of groups){
+    const sg=String(ms[0].subGroup).replace(/_SCHOOLSHOES$/i,'').toUpperCase().split('_');
+    const colour=COLOR_CODES[sg[0]] ? sg.shift() : '';
+    const name=tidyCase(sg.join(' ').toLowerCase())+(colour?' '+COLOR_CODES[colour]:'');
+    const bySize=new Map();
+    for(const m of ms) for(const s of (m.sizes||[])) if(s.stock>0){
+      const r=s.rate||m.priceMin||0;
+      if(!bySize.has(s.label)) bySize.set(s.label,{label:s.label,num:s.num,stock:0,rate:0,priceMax:0,codes:[]});
+      const b=bySize.get(s.label); b.stock+=s.stock; b.codes.push(m.id);
+      if(r){ b.rate=b.rate?Math.min(b.rate,r):r; b.priceMax=Math.max(b.priceMax,r); }
+    }
+    const sizes=[...bySize.values()].sort(sizeOrder);
+    if(!sizes.length) continue;
+    const prices=sizes.flatMap(s=>[s.rate,s.priceMax]).filter(Boolean);
+    const photoFrom=ms.slice().sort((a,b)=>imagesOf(b).length-imagesOf(a).length||(b.totalStock||0)-(a.totalStock||0))[0];
+    const common=f=>{ const c={}; ms.forEach(m=>{ const v=m[f]; if(v) c[v]=(c[v]||0)+1; }); return Object.keys(c).sort((a,b)=>c[b]-c[a])[0]||''; };
+    out.push({ id:'G_'+key, displayName:name, rawName:name, brand:common('brand')||common('autoBrand')||tidyCase(String(ms[0].group||'')),
+      gender:common('gender')||common('autoGender')||'Kids', category:'School Shoes', color:colour?COLOR_CODES[colour]:'',
+      priceMin:prices.length?Math.min(...prices):0, priceMax:prices.length?Math.max(...prices):0,
+      images:imagesOf(photoFrom), mapped:true, inStock:true, sizes, group_of:ms.map(m=>m.id) });
+  }
+  return out;
+}
 async function regenerateSnapshot(silent, freshList){
   try{
     // The import passes the list it just wrote; the Publish button first pulls other staff's changes.
     if(!freshList){ await syncAdminData(); renderAdminSummary(); freshList=adminProducts; }
     const src=freshList.filter(p=>p.inStock).map(p=>({id:p.id,data:()=>p}));
-    const list=src.map(d=>{
-      const p=d.data();
-      return { id:d.id, displayName:p.displayName||'', rawName:p.rawName||'', brand:p.brand||'', autoBrand:p.autoBrand||'',
+    const list=combineSchoolShoes(src.map(d=>({id:d.id,...d.data()}))).map(p=>{
+      return { id:p.id, displayName:p.displayName||'', rawName:p.rawName||'', brand:p.brand||'', autoBrand:p.autoBrand||'',
         gender:p.gender||'', autoGender:p.autoGender||'', category:p.category||'', autoCategory:p.autoCategory||'',
         color:p.color||'', colorHint:p.colorHint||'', priceMin:p.priceMin||0, priceMax:p.priceMax||0,
         images:imagesOf(p), mapped:!!p.mapped,
-        sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>({label:s.label,stock:s.stock})) };
+        sizes:(p.sizes||[]).filter(s=>s.stock>0).map(s=>{ const o={label:s.label,stock:s.stock}; if(s.rate)o.price=s.rate; if(s.priceMax&&s.priceMax!==s.rate)o.priceMax=s.priceMax; if(s.codes)o.codes=s.codes; return o; }),
+        ...(p.group_of?{group_of:p.group_of}:{}) };
     });
     // Split into chunks well under Firestore's 1 MiB doc limit, written in one atomic batch.
     const json=JSON.stringify(list), parts=[];
@@ -1247,7 +1305,7 @@ function showMoreCards(){
   if(clientShown>from) appendCards(from);
 }
 function cardHTML(p){
-  const sizes=(p.sizes||[]).filter(s=>s.stock>0).slice(0,7);
+  const all=(p.sizes||[]).filter(s=>s.stock>0), sizes=all.slice(0,7), moreSizes=all.length-sizes.length;
   const priceTxt=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):`${money(p.priceMin)} <small>–</small> ${money(p.priceMax)}`) : '—';
   const img=imagesOf(p)[0]?`<img src="${esc(imagesOf(p)[0])}" loading="lazy" alt="${esc(nameOf(p))}">`
     :`<div class="ph"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 16c2-1 4-1 5 0 2 1 3 1 5 0l8-3c1-.4 2 .2 2 1.3V17a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2Z"/><path d="M4 16V9a2 2 0 0 1 2-2h3l2 3"/></svg><span>Photo coming soon</span></div>`;
@@ -1257,17 +1315,21 @@ function cardHTML(p){
       ${brandOf(p)?`<div class="card-brand">${esc(brandOf(p))}</div>`:''}
       <div class="card-name">${esc(nameOf(p))}</div>
       <div class="card-price">${priceTxt}</div>
-      ${sizes.length?`<div class="sizes">${sizes.map(s=>`<span class="sz">${esc(s.label)}</span>`).join('')}</div>`:''}
+      ${sizes.length?`<div class="sizes">${sizes.map(s=>`<span class="sz">${esc(s.label)}</span>`).join('')}${moreSizes>0?`<span class="sz">+${moreSizes}</span>`:''}</div>`:''}
     </div></div>`;
 }
 function openDetail(id){
   const p=cachedProducts.find(x=>x.id===id); if(!p) return;
   const imgs=imagesOf(p);
   const price=p.priceMin? (p.priceMin===p.priceMax?money(p.priceMin):money(p.priceMin)+' – '+money(p.priceMax)):'—';
-  const grid=(p.sizes||[]).filter(s=>s.stock>0).map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${Number(s.stock)||0} left</div></div>`).join('');
+  const live=(p.sizes||[]).filter(s=>s.stock>0);
+  const pricePerSize=new Set(live.map(s=>s.price).filter(Boolean)).size>1;
+  const grid=live.map(s=>`<div class="size-cell ${s.stock<=2?'low':''}"><div class="n">${esc(s.label)}</div><div class="s">${Number(s.stock)||0} left</div>`
+    +(pricePerSize&&s.price?`<div class="p">${money(s.price)}${s.priceMax?'–'+Number(s.priceMax):''}</div>`:'')
+    +(s.codes?`<div class="c">${s.codes.map(esc).join('<br>')}</div>`:'')+`</div>`).join('');
   let wa='';
   if(CONFIG.whatsapp.enabled){
-    const msg=encodeURIComponent(`Hi, I'm interested in: ${nameOf(p)} (${p.id})`);
+    const msg=encodeURIComponent(`Hi, I'm interested in: ${brandOf(p)?brandOf(p)+' ':''}${nameOf(p)}${p.group_of?'':' ('+p.id+')'}`);
     wa=`<a class="btn primary" style="width:100%;justify-content:center;text-decoration:none;margin-top:16px" href="https://wa.me/${CONFIG.whatsapp.number}?text=${msg}" target="_blank" rel="noopener">Enquire on WhatsApp</a>`;
   }
   openSheet(`
@@ -1279,7 +1341,7 @@ function openDetail(id){
       <div style="font-size:24px;font-weight:800;letter-spacing:-.02em;margin-bottom:12px">${price}</div>
       ${catOf(p)?`<div class="kv"><b>Type</b><span>${esc(catOf(p))}${genderOf(p)?' · '+esc(genderOf(p)):''}</span></div>`:''}
       ${colorOf(p)?`<div class="kv"><b>Colour</b><span>${esc(colorOf(p))}</span></div>`:''}
-      <div class="kv"><b>Code</b><span>${esc(p.id)}</span></div>
+      ${p.group_of?'':`<div class="kv"><b>Code</b><span>${esc(p.id)}</span></div>`}
       <div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 4px">Available sizes</div>
       <div class="size-grid">${grid||'<span class="sub">—</span>'}</div>
       ${wa}
