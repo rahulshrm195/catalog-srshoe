@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.11.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.12.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -189,6 +189,14 @@ select.control:focus{border-color:var(--accent)}
 .riskrow{align-items:flex-start}
 .mrow.riskrow .mname,.mrow.riskrow .mmeta{white-space:normal; overflow:visible}
 .riskrow .sizes{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
+.logdays{display:grid; grid-template-columns:repeat(14,minmax(0,1fr)); gap:3px; margin:0 0 16px}
+.logday{border-radius:8px; padding:6px 0; text-align:center; font-size:9px; overflow:hidden; color:var(--muted); background:var(--bg); border:1px solid var(--line)}
+.logday b{display:block; font-size:14px; color:var(--ink)}
+.logday.ok{background:#E3F2EA; border-color:var(--ok)} .logday.miss{background:var(--danger-soft); border-color:var(--danger)}
+.logday.wait{border-style:dashed; border-color:var(--warn)}
+.logtable{overflow-x:auto} .logtable table{width:100%; border-collapse:collapse; font-size:13px}
+.logtable th,.logtable td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); white-space:nowrap}
+.logtable th{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em}
 #riskStats .num{font-size:clamp(18px,5.5vw,26px); white-space:nowrap}
 #newCat{border:1px solid var(--line-strong); border-radius:11px; padding:10px 12px; background:var(--surface); color:var(--ink)}
 .size-cell .p{font-size:11px; font-weight:700; margin-top:2px}
@@ -346,7 +354,8 @@ select.control:focus{border-color:var(--accent)}
     <h1 class="page">Catalog control</h1>
     <div id="staleBanner" class="hidden" style="background:var(--warn-soft);border:1px solid var(--warn);border-radius:11px;padding:10px 14px;margin:0 0 14px;font-size:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"></div>
     <p class="sub" id="adminSub">—</p>
-    <p class="sub" style="margin-top:-14px;font-size:12px"><span id="syncNote"></span> · <button class="linkbtn" id="reloadAll" style="padding:2px 4px;font-size:12px">Reload all products</button></p>
+    <p class="sub" id="importStatus" style="margin-top:-14px;font-size:13px;font-weight:600"></p>
+    <p class="sub" style="margin-top:-10px;font-size:12px"><span id="syncNote"></span> · <button class="linkbtn" id="reloadAll" style="padding:2px 4px;font-size:12px">Reload all products</button></p>
     <p class="sub" style="margin-top:-14px;font-family:ui-monospace,monospace;font-size:12px">build v<span id="verStamp"></span></p>
 
     <div class="tabs-row">
@@ -357,6 +366,7 @@ select.control:focus{border-color:var(--accent)}
         <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
         <button class="tab" data-tab="cats">Categories</button>
         <button class="tab" data-tab="risk">At risk</button>
+        <button class="tab" data-tab="log">Import log</button>
       </div>
       <button class="btn" id="publishBtn"><span>Publish to catalog<span id="publishN"></span></span></button>
       <span class="sub" id="publishedStamp" style="margin:0"></span>
@@ -428,6 +438,14 @@ select.control:focus{border-color:var(--accent)}
         <button class="btn primary" id="addCat">Add</button>
       </div>
       <div id="catList"></div>
+    </div>
+
+    <!-- IMPORT LOG -->
+    <div class="panel tabpane hidden" id="pane-log">
+      <h2 style="margin:0 0 4px; font-size:18px">Import log</h2>
+      <p class="sub" style="margin:0 0 14px">Every stock import — when, who, which file and what changed. Green = imported that day, red = missed.</p>
+      <div class="logdays" id="logDays"></div>
+      <div id="logList"></div>
     </div>
 
     <!-- AT RISK -->
@@ -778,7 +796,10 @@ function recordMovement(parsed, existing){
 }
 async function applyImport(){
   if(!pendingImport) return;
-  const {parsed,goingOOS,existing,carry,fileDate}=pendingImport;
+  const by=staffName(); if(!by) return;
+  const {parsed,goingOOS,existing,carry,fileDate,fileName,unchanged,issues}=pendingImport;
+  const counts={ new:parsed.filter(p=>!existing.has(p.base)).length, updated:parsed.filter(p=>existing.has(p.base)).length,
+                 outOfStock:goingOOS.length, unchanged, issues:issues.length };
   $('#applyImport').disabled=true; $('#cancelImport').disabled=true;
   $('#applyProgress').classList.remove('hidden');
   const ops=[]; // {ref, data}
@@ -811,8 +832,10 @@ async function applyImport(){
     renderAdminSummary(); renderIssuesFromDB();
     await regenerateSnapshot(true, adminProducts);
     toast('Import applied and published');
+    await writeImportLog({ ok:true, by, fileName, fileDate, counts, written:ops.length });
   }catch(err){
     console.error('Import failed at', done, '/', ops.length, err);
+    writeImportLog({ ok:false, by, fileName, fileDate, counts, written:done, error:String(err.message||err).slice(0,200) });
     $('#ptext').innerHTML = `<b style="color:var(--danger)">Stopped after ${done}/${ops.length} — ${esc(err.message||String(err))}</b>`;
     toast('Import failed: '+(err.message||err), true);
     $('#applyImport').disabled=false; $('#cancelImport').disabled=false;
@@ -837,7 +860,7 @@ function idbOpen(){ return new Promise((res,rej)=>{ const r=indexedDB.open('sr_c
 async function idbGet(k){ try{ const d=await idbOpen(); return await new Promise((res,rej)=>{ const q=d.transaction('kv').objectStore('kv').get(k); q.onsuccess=()=>res(q.result); q.onerror=()=>rej(q.error); }); }catch(e){ return null; } }
 async function idbSet(k,v){ try{ const d=await idbOpen(); await new Promise((res,rej)=>{ const t=d.transaction('kv','readwrite'); t.objectStore('kv').put(v,k); t.oncomplete=res; t.onerror=()=>rej(t.error); }); }catch(e){ console.warn('Device cache not saved',e); } }
 const plain = o => JSON.parse(JSON.stringify(o)); // drops Firestore classes so IndexedDB can store it
-function saveAdminCache(){ idbSet(ADMIN_CACHE,{ ...adminSync, lastPublished, settings:plain(adminSettings), docs:plain(adminProducts) }); }
+function saveAdminCache(){ idbSet(ADMIN_CACHE,{ ...adminSync, lastPublished, settings:plain(adminSettings), logs:plain(importLogs), docs:plain(adminProducts) }); }
 const tsPair = v => v ? [v.seconds??0, v.nanoseconds??0] : [0,0];
 const later = (a,b) => (a[0]-b[0]||a[1]-b[1])>0 ? a : b;
 async function syncAdminData(forceFull){
@@ -848,9 +871,10 @@ async function syncAdminData(forceFull){
     const snap=await db.collection(COL).where('updatedAt','>',since).get();
     const byId=new Map(cached.docs.map(d=>[d.id,d]));
     let newest=cached.syncedAt, pub=cached.lastPublished??null, settings=cached.settings||{};
+    const logs=new Map((cached.logs||[]).map(l=>[l.id,l]));
     snap.docs.forEach(d=>{ const x=d.data(); newest=later(tsPair(x.updatedAt),newest);
-      if(d.id===SNAP_PREFIX+'meta') pub=x.t; else if(d.id===SETTINGS_ID) settings=x; else if(!isSnapshotDoc(d.id)) byId.set(d.id,{id:d.id,...x}); });
-    adminProducts=[...byId.values()]; lastPublished=pub; adminSettings=settings; adminSync={ syncedAt:newest, fullAt:cached.fullAt }; reads=snap.size;
+      if(d.id===SNAP_PREFIX+'meta') pub=x.t; else if(d.id===SETTINGS_ID) settings=x; else if(isLogDoc(d.id)) logs.set(d.id,{id:d.id,...x}); else if(!isSnapshotDoc(d.id)) byId.set(d.id,{id:d.id,...x}); });
+    adminProducts=[...byId.values()]; lastPublished=pub; adminSettings=settings; importLogs=[...logs.values()]; adminSync={ syncedAt:newest, fullAt:cached.fullAt }; reads=snap.size;
   } else {
     const snap=await db.collection(COL).get();
     let newest=[0,0];
@@ -858,6 +882,7 @@ async function syncAdminData(forceFull){
     adminProducts=snap.docs.filter(d=>!isSnapshotDoc(d.id)).map(d=>({id:d.id,...d.data()}));
     const meta=snap.docs.find(d=>d.id===SNAP_PREFIX+'meta'), s0=snap.docs.find(d=>d.id===SNAP_PREFIX+0), st=snap.docs.find(d=>d.id===SETTINGS_ID);
     adminSettings = st ? st.data() : {};
+    importLogs = snap.docs.filter(d=>isLogDoc(d.id)).map(d=>({id:d.id,...d.data()}));
     lastPublished = meta ? meta.data().t : s0 ? s0.data().t : null;
     adminSync={ syncedAt:newest, fullAt:Date.now() }; reads=snap.size;
   }
@@ -868,7 +893,8 @@ async function syncAdminData(forceFull){
 }
 async function loadAdminData(forceFull){
   await syncAdminData(forceFull);
-  renderAdminSummary(); renderCats();
+  renderAdminSummary(); renderCats(); renderImportStatus();
+  if(!$('#pane-log').classList.contains('hidden')) renderLog();
   if(!$('#pane-risk').classList.contains('hidden')) renderRisk();
 }
 // Reading every product costs ~3,500 Firestore reads, so edits update this list in memory instead of re-reading it.
@@ -1368,6 +1394,60 @@ function openDeleteCat(name){
     await saveSettings({categories:getCategories().filter(c=>c!==name), renames});
     closeSheet(); saveAdminCache(); renderCats(); renderAdminSummary(); toast('Deleted "'+name+'"');
   };
+}
+
+/* =====================================================================
+   IMPORT LOG — every stock import writes a small "__importlog_<time>" record (who, when, which file,
+   what changed). Records sync to each admin device with the products, so the log costs no extra reads.
+   ===================================================================== */
+const LOG_PREFIX='__importlog_';
+const isLogDoc = id => String(id).startsWith(LOG_PREFIX);
+let importLogs=[];
+function staffName(){
+  let n=''; try{ n=localStorage.getItem('sr_staff_name')||''; }catch(e){}
+  if(!n){ n=(prompt('Your name (saved on this phone, shown in the import log):')||'').trim().slice(0,30);
+    if(!n){ toast('Enter your name to import',true); return ''; } try{ localStorage.setItem('sr_staff_name',n); }catch(e){} }
+  return n;
+}
+async function writeImportLog(entry){
+  const t=Date.now(), id=LOG_PREFIX+t;
+  const rec={ kind:'importlog', t, ...entry, version:APP_VERSION, device:(navigator.userAgent.match(/\(([^)]+)\)/)||[])[1]?.slice(0,60)||'' };
+  try{ await db.collection(COL).doc(id).set({...rec, ...stamp()}); }catch(e){ console.warn('Import log not saved',e); }
+  importLogs=[...importLogs.filter(l=>l.id!==id), {id,...rec}]; saveAdminCache(); renderImportStatus();
+  if(!$('#pane-log').classList.contains('hidden')) renderLog();
+}
+const dayKey = t => { const d=new Date(t); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); };
+const fmtWhen = t => new Date(t).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'});
+const fmtDay = t => t?new Date(t).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'—';
+function lastGoodImport(){ return importLogs.filter(l=>l.ok).sort((a,b)=>b.t-a.t)[0]; }
+function renderImportStatus(){ // one line in the Admin header
+  const el=$('#importStatus'); if(!el) return;
+  const l=lastGoodImport();
+  if(!l){ el.innerHTML='<span style="color:var(--warn)">No import recorded yet — the log starts with the next import.</span>'; return; }
+  const today=dayKey(l.t)===dayKey(Date.now());
+  const days=Math.floor((new Date().setHours(0,0,0,0)-new Date(l.t).setHours(0,0,0,0))/86400000);
+  el.innerHTML = today ? `<span style="color:var(--ok)">● Stock imported today, ${esc(fmtWhen(l.t))} by ${esc(l.by)}</span>`
+    : `<span style="color:var(--danger)">● No import today — last was ${days} day${days>1?'s':''} ago (${esc(fmtWhen(l.t))} by ${esc(l.by)})</span>`;
+}
+function renderLog(){
+  renderImportStatus();
+  const logs=importLogs.slice().sort((a,b)=>b.t-a.t);
+  const first=logs.length?Math.min(...logs.map(l=>l.t)):null;
+  const done=new Set(logs.filter(l=>l.ok).map(l=>dayKey(l.t)));
+  const days=[]; for(let i=13;i>=0;i--){ const d=new Date(); d.setHours(12,0,0,0); d.setDate(d.getDate()-i); days.push(d); }
+  $('#logDays').innerHTML=days.map(d=>{
+    const k=dayKey(d), tracked=first && d.getTime()>=new Date(first).setHours(0,0,0,0), isToday=k===dayKey(Date.now());
+    const cls=done.has(k)?'ok':!tracked?'na':isToday?'wait':'miss';
+    const tip=done.has(k)?'Imported':!tracked?'Before the log started':isToday?'Not yet today':'Missed';
+    return `<div class="logday ${cls}" title="${tip}"><b>${d.getDate()}</b><span>${d.toLocaleDateString('en-IN',{weekday:'short'})}</span></div>`;
+  }).join('');
+  $('#logList').innerHTML = logs.length ? `<div class="logtable"><table><thead><tr><th>When</th><th>By</th><th>File date</th><th>Changes</th><th>Result</th></tr></thead><tbody>`
+    + logs.slice(0,60).map(l=>{ const c=l.counts||{};
+      const old = l.fileDate && dayKey(l.fileDate)!==dayKey(l.t) && l.fileDate < new Date(l.t).setHours(0,0,0,0);
+      return `<tr><td>${esc(fmtWhen(l.t))}</td><td>${esc(l.by||'—')}</td><td${old?' style="color:var(--warn)" title="File is older than the import day"':''}>${esc(fmtDay(l.fileDate))}</td>
+        <td>${c.new||0} new · ${c.updated||0} updated · ${c.outOfStock||0} sold out</td>
+        <td>${l.ok?'<span style="color:var(--ok)">Done</span>':`<span style="color:var(--danger)" title="${esc(l.error||'')}">Failed</span>`}</td></tr>`; }).join('')
+    + `</tbody></table></div>` : '<div class="state">No imports recorded yet. The log starts with the next stock import.</div>';
 }
 
 /* =====================================================================
@@ -1915,6 +1995,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $('#pane-'+t.dataset.tab).classList.remove('hidden');
   if(t.dataset.tab==='cats') renderCats();
   if(t.dataset.tab==='risk') renderRisk();
+  if(t.dataset.tab==='log') renderLog();
 });
 
 // client control bindings
