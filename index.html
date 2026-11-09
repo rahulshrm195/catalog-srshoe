@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.13.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.14.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -188,6 +188,15 @@ select.control:focus{border-color:var(--accent)}
 .size-cell.low .s{color:var(--warn)}
 .riskrow{align-items:flex-start}
 .mrow.riskrow .mname,.mrow.riskrow .mmeta{white-space:normal; overflow:visible}
+.rosz{font-size:12px; font-weight:600; border:1px solid var(--line); border-radius:7px; padding:3px 7px; color:var(--muted); background:var(--surface)}
+.rosz b{color:var(--ink)} .rosz.out{border-color:var(--danger); color:var(--danger)} .rosz.low{border-color:var(--warn); color:var(--warn)}
+.rosz .add{color:var(--accent-deep); font-weight:800}
+.robrand{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:18px 0 8px; padding-bottom:6px; border-bottom:2px solid var(--line)}
+.robrand h3{margin:0; font-size:16px} .robrand .sub{margin:0; flex:1}
+.fast{background:var(--danger); color:#fff} .quick{background:var(--warn-soft); color:var(--warn)}
+.mrow.done{opacity:.55}
+.robtns{display:flex; flex-direction:column; gap:6px}
+@media (max-width:640px){ .robtns{flex-direction:row; flex-basis:100%} .robtns .btn{flex:1} }
 .riskrow .sizes{display:flex; flex-wrap:wrap; gap:4px; align-items:center}
 .logdays{display:grid; grid-template-columns:repeat(14,minmax(0,1fr)); gap:3px; margin:0 0 16px}
 .logday{border-radius:8px; padding:6px 0; text-align:center; font-size:9px; overflow:hidden; color:var(--muted); background:var(--bg); border:1px solid var(--line)}
@@ -366,6 +375,7 @@ select.control:focus{border-color:var(--accent)}
         <button class="tab" data-tab="issues">Data issues <span id="issueCount"></span></button>
         <button class="tab" data-tab="cats">Categories</button>
         <button class="tab" data-tab="risk">At risk</button>
+        <button class="tab" data-tab="reorder">Reorder</button>
         <button class="tab" data-tab="log">Import log</button>
       </div>
       <button class="btn" id="publishBtn"><span>Publish to catalog<span id="publishN"></span></span></button>
@@ -478,6 +488,44 @@ select.control:focus{border-color:var(--accent)}
       </div>
       <div id="riskList"></div>
       <div id="riskMore" style="text-align:center;margin-top:14px"></div>
+    </div>
+
+    <!-- REORDER -->
+    <div class="panel tabpane hidden" id="pane-reorder">
+      <h2 style="margin:0 0 4px; font-size:18px">Reorder — fast sellers running low</h2>
+      <p class="sub" style="margin:0 0 4px">Pairs sold per size, counted from each day's stock import. Suggested quantities cover the next weeks of sales after what's on the shelf.</p>
+      <p class="sub" id="roTracking" style="margin:0 0 14px;font-size:12px"></p>
+      <div class="stat-row" id="roStats"></div>
+      <div class="controls" style="margin-bottom:12px;flex-wrap:wrap">
+        <select class="control" id="roView">
+          <option value="need">Needs reorder</option>
+          <option value="all">All selling articles</option>
+          <option value="done">Marked ordered / skipped</option>
+        </select>
+        <select class="control" id="roWindow">
+          <option value="28">Speed from last 4 weeks</option>
+          <option value="14">Speed from last 2 weeks</option>
+        </select>
+        <select class="control" id="roCover">
+          <option value="2">Order for 2 weeks</option>
+          <option value="3">Order for 3 weeks</option>
+        </select>
+        <select class="control" id="roMin">
+          <option value="2">Sold 2+ pairs</option>
+          <option value="3" selected>Sold 3+ pairs</option>
+          <option value="5">Sold 5+ pairs</option>
+        </select>
+        <select class="control" id="roCat"></select>
+        <select class="control" id="roBrand"></select>
+        <select class="control" id="roSort">
+          <option value="brand">By brand (to order)</option>
+          <option value="sold">Most sold first</option>
+          <option value="weeks">Running out soonest</option>
+        </select>
+        <button class="btn" id="roCsv">Download list</button>
+      </div>
+      <div id="roList"></div>
+      <div id="roMore" style="text-align:center;margin-top:14px"></div>
     </div>
 
     <!-- ISSUES -->
@@ -713,7 +761,7 @@ async function handleFile(f){
     await syncAdminData();
     const existing=new Map(adminProducts.map(({id,...d})=>[id,d]));
     const parsedBases=new Set(parsed.map(p=>p.base));
-    recordMovement(parsed, existing);
+    recordMovement(parsed, existing, fileDate);
     let nNew=0,nUpd=0;
     // Only products whose stock-file data changed get written — most rows are identical day to day.
     const changed=parsed.filter(p=>{
@@ -763,8 +811,21 @@ function renderImportPreview(nNew,nUpd,nOOS,nIss,nSame){
 /* Stock age. The billing export has no purchase or sale dates, so each import compares every size with the
    previous import: stock down → lastSale, stock up or a new size → lastIn. New products get firstSeen.
    Products that existed before tracking began have no firstSeen; their age counts from settings.trackingStart. */
-function recordMovement(parsed, existing){
-  const now=Date.now();
+/* PAIRS SOLD — each import also adds the pairs that went out / came in per size to the product's
+   mv log: { "<day>": { "<size>": [sold, received] } }, kept for MV_KEEP days. The day is the stock
+   file's date. Products with no movement are not touched, so this adds no extra writes. */
+const MV_KEEP=56;
+const dayNo = t => Math.floor(((t||Date.now())+19800000)/86400000); // whole days, India time
+function addMv(mv, day, moves){ // moves: Map size → [sold, received]
+  if(!moves.size) return mv;
+  const out={}, cut=day-MV_KEEP;
+  Object.keys(mv||{}).forEach(d=>{ if(+d>cut) out[d]={...mv[d]}; });
+  const today=out[day]||{};
+  moves.forEach(([so,inn],label)=>{ const o=today[label]||[0,0]; today[label]=[o[0]+so,o[1]+inn]; });
+  out[day]=today; return out;
+}
+function recordMovement(parsed, existing, fileDate){
+  const now=Date.now(), day=dayNo(fileDate||now);
   for(const p of parsed){
     const ex=existing.get(p.base);
     // previous sizes, including kids sizes that older versions stored as separate products (N6246X9K)
@@ -774,20 +835,22 @@ function recordMovement(parsed, existing){
     for(const [id,d] of existing) if(id!==p.base && baseCode(id)===p.base){ prevSizes.push(...live(d)); hadSplit=true; }
     const known=!!ex || hadSplit;
     const prev=new Map(); prevSizes.forEach(o=>{ const q=prev.get(o.label); prev.set(o.label, q?{...o,stock:(q.stock||0)+(o.stock||0),lastSale:Math.max(q.lastSale||0,o.lastSale||0)||undefined,lastIn:Math.max(q.lastIn||0,o.lastIn||0)||undefined}:o); });
-    let sold=false, came=false;
+    let sold=false, came=false; const moves=new Map();
     // sizeless items (socks…) were stored under labels like "Mens Socks" before; compare their totals
     const looseBefore=[...prev.values()].filter(o=>o.num==null).reduce((a,o)=>a+(o.stock||0),0);
     for(const s of p.sizes){
       const o=prev.get(s.label);
       if(o){ if(o.lastSale) s.lastSale=o.lastSale; if(o.lastIn) s.lastIn=o.lastIn; }
       const before = o ? (o.stock||0) : (s.num==null ? looseBefore : 0);
-      if(known && s.stock<before){ s.lastSale=now; sold=true; }
-      else if(known && s.stock>before){ s.lastIn=now; came=true; }
+      if(known && s.stock<before){ s.lastSale=now; sold=true; moves.set(s.label,[before-s.stock,0]); }
+      else if(known && s.stock>before){ s.lastIn=now; came=true; moves.set(s.label,[0,s.stock-before]); }
     }
     // a numbered size that disappeared from the file sold its last pairs
     for(const [label,o] of prev) if(o.num!=null && (o.stock||0)>0 && !p.sizes.some(s=>s.label===label)){
       p.sizes.push({label, num:o.num??null, stock:0, rate:o.rate||0, lastSale:now, ...(o.lastIn?{lastIn:o.lastIn}:{})}); sold=true;
+      moves.set(label,[o.stock||0,0]);
     }
+    if(moves.size) p.mv=addMv(ex?.mv, day, moves);
     p.sizes.sort(sizeOrder);
     if(ex?.firstSeen) p.firstSeen=ex.firstSeen; else if(!known) p.firstSeen=now;
     const ls=sold?now:ex?.lastSale, li=came?now:ex?.lastIn;
@@ -808,7 +871,10 @@ async function applyImport(){
     if(!base) return; // skip any row that produced an empty product code
     ops.push({ref:db.collection(COL).doc(base), data:{ ...(carry.get(base)||{}), ...fileFields, colorHint, lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }});
   });
-  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSale:Date.now(), lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }}));
+  const oosMv=new Map(goingOOS.map(id=>{ const d=existing.get(id), m=new Map();
+    (d.sizes||[]).forEach(o=>{ if((o.stock||0)>0) m.set(o.label,[o.stock,0]); });
+    return [id, m.size?addMv(d.mv, dayNo(fileDate||Date.now()), m):null]; }));
+  goingOOS.forEach(id=> ops.push({ref:db.collection(COL).doc(id), data:{ inStock:false, totalStock:0, lastSale:Date.now(), ...(oosMv.get(id)?{mv:oosMv.get(id)}:{}), lastSeen:firebase.firestore.FieldValue.serverTimestamp(), ...stamp() }}));
   const CH=400; let done=0;
   try{
     for(let i=0;i<ops.length;i+=CH){
@@ -825,9 +891,10 @@ async function applyImport(){
     invalidateClientCache();
     // `existing` was read moments ago; apply what we just wrote instead of reading ~3,500 products again.
     parsed.forEach(p=>{ const {base,...f}=p; existing.set(base,{...(existing.get(base)||{}),...(carry.get(base)||{}),...f}); });
-    goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0,lastSale:Date.now()}));
+    goingOOS.forEach(id=>Object.assign(existing.get(id),{inStock:false,totalStock:0,lastSale:Date.now()},oosMv.get(id)?{mv:oosMv.get(id)}:{}));
     saveSettings({ lastFileDate: Math.max(fileDate||0, adminSettings.lastFileDate||0) || null,
-                   trackingStart: adminSettings.trackingStart || Date.now() }).catch(e=>console.warn('Settings not saved',e));
+                   trackingStart: adminSettings.trackingStart || Date.now(),
+                   salesCountStart: adminSettings.salesCountStart || dayNo(fileDate||Date.now()) }).catch(e=>console.warn('Settings not saved',e));
     adminProducts=[...existing.entries()].map(([id,d])=>({id,...d})); adminLoaded=true; saveAdminCache();
     renderAdminSummary(); renderIssuesFromDB();
     await regenerateSnapshot(true, adminProducts);
@@ -896,6 +963,7 @@ async function loadAdminData(forceFull){
   renderAdminSummary(); renderCats(); renderImportStatus();
   if(!$('#pane-log').classList.contains('hidden')) renderLog();
   if(!$('#pane-risk').classList.contains('hidden')) renderRisk();
+  if(!$('#pane-reorder').classList.contains('hidden')) renderReorder();
 }
 // Reading every product costs ~3,500 Firestore reads, so edits update this list in memory instead of re-reading it.
 function renderAdminSummary(){
@@ -976,10 +1044,12 @@ function combineSchoolShoes(products){
       priceMin:prices.length?Math.min(...prices):0, priceMax:prices.length?Math.max(...prices):0,
       images:imagesOf(photoFrom), mapped:true, inStock:true, sizes, group_of:ms.map(m=>m.id),
       lastSale:Math.max(0,...ms.map(m=>m.lastSale||0))||undefined, lastIn:Math.max(0,...ms.map(m=>m.lastIn||0))||undefined,
-      firstSeen:ms.every(m=>m.firstSeen)?Math.min(...ms.map(m=>m.firstSeen)):undefined });
+      firstSeen:ms.every(m=>m.firstSeen)?Math.min(...ms.map(m=>m.firstSeen)):undefined, mv:mergeMv(ms), ro:ms.find(m=>m.ro)?.ro });
   }
   return out;
 }
+function mergeMv(ms){ const out={}; ms.forEach(m=>Object.entries(m.mv||{}).forEach(([d,sz])=>{ const t=out[d]||(out[d]={});
+  Object.entries(sz).forEach(([l,[a,b]])=>{ const o=t[l]||[0,0]; t[l]=[o[0]+a,o[1]+b]; }); })); return out; }
 /* ONLINE STORE copy (read by srshoes.in). Only what a customer may see: name, brand, type, photos, sizes in
    stock with their price, "only 1–2 left" hints, and a rank r — higher = sell first (broken size sets, last
    pairs, no recent sale). Items without a photo are left out. */
@@ -1559,6 +1629,109 @@ $('#riskCsv').onclick=()=>{
 };
 
 /* =====================================================================
+   REORDER — fast sellers that are running low, from the pairs-sold log (mv) that each import adds.
+   Weekly speed per size = pairs sold in the window ÷ weeks counted (at least one week, so a single
+   busy day doesn't look like a trend). Suggested = speed × weeks to cover − pairs on the shelf.
+   "Ordered" / "Skip" marks hide an article for RO_HIDE days.
+   ===================================================================== */
+const RO_HIDE=10;
+let roShown=40, roRows=[];
+function reorderArticles(){
+  const today=dayNo(), start=adminSettings.salesCountStart;
+  const win=+$('#roWindow').value, cover=+$('#roCover').value;
+  const counted=start!=null ? Math.max(1, today-start+1) : 0;
+  const weeks=Math.max(1, Math.min(win, counted))/7;
+  const sumSince=(mv,from)=>{ const m=new Map(); Object.entries(mv||{}).forEach(([d,sz])=>{ if(+d>today-from) Object.entries(sz).forEach(([l,[so]])=>{ if(so) m.set(l,(m.get(l)||0)+so); }); }); return m; };
+  return combineSchoolShoes(adminProducts.filter(p=>p.mv)).map(p=>{
+    const soldW=sumSince(p.mv,win), sold14=sumSince(p.mv,14);
+    if(!soldW.size) return null;
+    const stockOf=new Map((p.sizes||[]).map(s=>[s.label,p.inStock===false?0:(s.stock||0)]));
+    const labels=[...new Set([...soldW.keys(),...stockOf.keys()])].map(l=>({label:l,num:parseFloat(l)})).sort(sizeOrder).map(o=>o.label);
+    const sizes=labels.map(l=>{ const sold=soldW.get(l)||0, stock=stockOf.get(l)||0, rate=sold/weeks;
+      const add=sold?Math.max(0,Math.ceil(rate*cover-stock)):0;
+      return { label:l, sold, sold14:sold14.get(l)||0, stock, rate, add, weeksLeft: rate?stock/rate:Infinity }; }).filter(s=>s.sold||s.stock);
+    const sold=sizes.reduce((a,s)=>a+s.sold,0), stock=sizes.reduce((a,s)=>a+s.stock,0), rate=sold/weeks;
+    const add=sizes.reduce((a,s)=>a+s.add,0);
+    const mark=p.ro && Date.now()-p.ro.t < RO_HIDE*86400000 ? p.ro : null;
+    return { p, sizes, sold, sold14:sizes.reduce((a,s)=>a+s.sold14,0), stock, rate, add, mark,
+      weeksLeft: rate?stock/rate:Infinity, brand:tidyCase(p.brand||p.autoBrand||'')||'No brand' };
+  }).filter(Boolean);
+}
+const speedTag = r => r.weeksLeft<2 ? '<span class="tag fast">Sells out in under 2 weeks</span>' : r.weeksLeft<4 ? '<span class="tag quick">Under 4 weeks left</span>' : '';
+const weeksTxt = w => w===Infinity ? '' : w<1 ? 'less than a week left' : `about ${Math.round(w)} week${Math.round(w)===1?'':'s'} left`;
+function renderReorder(){
+  const all=reorderArticles(), min=+$('#roMin').value, view=$('#roView').value, win=+$('#roWindow').value;
+  const fill=(id,label,vals)=>{ const el=$(id), cur=el.value; el.innerHTML=`<option value="">${label}</option>`+[...new Set(vals.filter(Boolean))].sort().map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join(''); el.value=cur; };
+  fill('#roCat','All types',all.map(r=>resolveCat(r.p))); fill('#roBrand','All brands',all.map(r=>r.brand));
+  const start=adminSettings.salesCountStart, counted=start!=null?dayNo()-start+1:0;
+  const fmt=d=>new Date(d*86400000).toLocaleDateString('en-IN',{day:'numeric',month:'short'});
+  $('#roTracking').textContent = start!=null
+    ? `Counting pairs sold for ${counted} day${counted===1?'':'s'} (since ${fmt(start)}).${counted<win?` Speeds use the days counted so far and get more reliable as ${win/7} weeks build up.`:''} A day's sales are missed only when new stock of the same size arrives the same day.`
+    : 'Counting of pairs sold starts with the next stock import.';
+  const selling=all.filter(r=>r.sold>=min), need=selling.filter(r=>r.add>0 && !r.mark);
+  $('#roStats').innerHTML=`
+    <div class="stat iss"><div class="num">${need.length}</div><div class="lbl">Articles to reorder</div></div>
+    <div class="stat new"><div class="num">${need.reduce((a,r)=>a+r.add,0)}</div><div class="lbl">Pairs suggested</div></div>
+    <div class="stat oos"><div class="num">${need.filter(r=>r.weeksLeft<2).length}</div><div class="lbl">Sell out in &lt; 2 weeks</div></div>
+    <div class="stat"><div class="num">${all.reduce((a,r)=>a+r.sold,0)}</div><div class="lbl">Pairs sold, last ${win/7} weeks</div></div>`;
+  const cat=$('#roCat').value, br=$('#roBrand').value, sort=$('#roSort').value;
+  roRows=(view==='need'?need:view==='done'?all.filter(r=>r.mark):selling)
+    .filter(r=>(!cat||resolveCat(r.p)===cat) && (!br||r.brand===br));
+  const by={ sold:(a,b)=>b.sold-a.sold, weeks:(a,b)=>a.weeksLeft-b.weeksLeft||b.sold-a.sold,
+             brand:(a,b)=>a.brand.localeCompare(b.brand)||a.weeksLeft-b.weeksLeft||b.sold-a.sold };
+  roRows.sort(by[sort]);
+  const row=r=>{ const p=r.p, img=imagesOf(p)[0];
+    const sz=r.sizes.map(s=>`<span class="rosz ${s.sold&&!s.stock?'out':s.add?'low':''}"><b>${esc(s.label)}</b> · sold ${s.sold} · ${s.stock} left${s.add?` <span class="add">+${s.add}</span>`:''}</span>`).join('');
+    return `<div class="mrow riskrow ${r.mark?'done':''}">
+      <div class="mthumb">${img?`<img src="${esc(img)}" loading="lazy">`:''}</div>
+      <div class="minfo">
+        <div class="mname">${esc(withBrand(p))} ${speedTag(r)}</div>
+        <div class="mmeta">${esc(p.group_of?p.group_of.length+' purchase codes':p.id)} · ${esc(resolveCat(p)||'No type')} · sold <b>${r.sold}</b> in ${win/7} weeks (${r.sold14} in last 2) · ${r.stock} left${r.rate?' · '+weeksTxt(r.weeksLeft):''}${r.add?` · <b style="color:var(--accent-deep)">order ${r.add}</b>`:''}${r.mark?` · marked ${r.mark.s==='ordered'?'ordered':'skip'} ${fmtDay(r.mark.t)}`:''}</div>
+        <div class="sizes" style="margin-top:6px;gap:6px">${sz}</div>
+      </div>
+      <div class="robtns">${r.mark?`<button class="btn sm roMark" data-id="${esc(p.id)}" data-s="">Undo</button>`:
+        `<button class="btn sm roMark" data-id="${esc(p.id)}" data-s="ordered">Ordered</button><button class="btn sm ghost roMark" data-id="${esc(p.id)}" data-s="skip">Skip</button>`}</div>
+    </div>`; };
+  const shown=roRows.slice(0,roShown); let html='';
+  if(sort==='brand'){ let cur=null;
+    shown.forEach(r=>{ if(r.brand!==cur){ cur=r.brand; const g=roRows.filter(x=>x.brand===cur);
+      html+=`<div class="robrand"><h3>${esc(cur)}</h3><p class="sub">${g.length} article${g.length>1?'s':''}${view!=='done'?` · ${g.reduce((a,x)=>a+x.add,0)} pairs to order`:''}</p>${view==='done'?'':`<button class="btn sm roShare" data-b="${esc(cur)}">Share on WhatsApp</button>`}</div>`; }
+      html+=row(r); }); }
+  else html=shown.map(row).join('');
+  $('#roList').innerHTML = roRows.length ? html : `<div class="state">${start==null?'Nothing yet — pairs sold are counted from the next stock import.':view==='need'?'Nothing needs reordering right now.':'Nothing here.'}</div>`;
+  $('#roMore').innerHTML = roRows.length>roShown ? `<button class="btn" id="roMoreBtn">Show more (${roRows.length-roShown} left)</button>` : '';
+  if($('#roMoreBtn')) $('#roMoreBtn').onclick=()=>{ roShown+=40; renderReorder(); };
+  $$('.roMark').forEach(b=>b.onclick=()=>markReorder(b.dataset.id,b.dataset.s));
+  $$('.roShare').forEach(b=>b.onclick=()=>{
+    const g=roRows.filter(r=>r.brand===b.dataset.b && r.add>0);
+    const txt=[`*${b.dataset.b} — order from SR Shoes, Nashik* (${new Date().toLocaleDateString('en-IN')})`,'',
+      ...g.map(r=>`• ${withBrand(r.p)} (${r.p.group_of?r.p.group_of.join(', '):r.p.id}): `+r.sizes.filter(s=>s.add).map(s=>`size ${s.label} × ${s.add}`).join(', ')),
+      '',`Total: ${g.reduce((a,r)=>a+r.add,0)} pairs`].join('\n');
+    window.open('https://wa.me/?text='+encodeURIComponent(txt),'_blank','noopener');
+  });
+}
+async function markReorder(id, s){
+  const r=roRows.find(x=>x.p.id===id); if(!r) return;
+  const ids=r.p.group_of||[id], ro=s?{s,t:Date.now()}:null;
+  try{
+    const batch=db.batch();
+    ids.forEach(i=>batch.set(db.collection(COL).doc(i),{ro:ro||firebase.firestore.FieldValue.delete(),...stamp()},{merge:true}));
+    await batch.commit();
+    ids.forEach(i=>{ const p=adminProducts.find(x=>x.id===i); if(p){ if(ro) p.ro=ro; else delete p.ro; } }); saveAdminCache();
+    toast(s==='ordered'?'Marked ordered — hidden for '+RO_HIDE+' days':s==='skip'?'Skipped for '+RO_HIDE+' days':'Back on the list');
+    renderReorder();
+  }catch(e){ toast('Could not save: '+e.message,true); }
+}
+['#roView','#roWindow','#roCover','#roMin','#roCat','#roBrand','#roSort'].forEach(id=>$(id).onchange=()=>{ roShown=40; renderReorder(); });
+$('#roCsv').onclick=()=>{
+  const q=v=>'"'+String(v??'').replace(/"/g,'""')+'"', win=+$('#roWindow').value;
+  const lines=[['Brand','Codes','Name','Type','Size','Sold (last '+win/7+' weeks)','Sold (last 2 weeks)','In stock','Order qty'].map(q).join(',')];
+  roRows.forEach(r=>r.sizes.forEach(s=>{ if(s.sold||s.add) lines.push([r.brand,(r.p.group_of||[r.p.id]).join(' '),withBrand(r.p),resolveCat(r.p),s.label,s.sold,s.sold14,s.stock,s.add].map(q).join(',')); }));
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['\ufeff'+lines.join('\n')],{type:'text/csv'}));
+  a.download='SR-Shoes-reorder-'+new Date().toISOString().slice(0,10)+'.csv'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+};
+
+/* =====================================================================
    SALESMAN — guided search: for whom → size → type. Every in-stock article in that size is listed,
    stock to sell first on top (broken sets, last pair in the size, no recent sale). Staff devices only.
    ===================================================================== */
@@ -2023,6 +2196,7 @@ $$('.tab').forEach(t=>t.onclick=()=>{
   $('#pane-'+t.dataset.tab).classList.remove('hidden');
   if(t.dataset.tab==='cats') renderCats();
   if(t.dataset.tab==='risk') renderRisk();
+  if(t.dataset.tab==='reorder') renderReorder();
   if(t.dataset.tab==='log') renderLog();
 });
 
