@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.14.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.15.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -464,6 +464,10 @@ select.control:focus{border-color:var(--accent)}
       <p class="sub" style="margin:0 0 4px">Broken size sets and stock that isn't selling — show these first, discount them, or return them before they turn into dead stock.</p>
       <p class="sub" id="riskTracking" style="margin:0 0 14px;font-size:12px"></p>
       <div class="stat-row" id="riskStats"></div>
+      <div style="border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:0 0 16px;background:var(--surface)">
+        <h3 style="margin:0 0 8px;font-size:15px">Are broken sets going down?</h3>
+        <div id="riskTrend"></div>
+      </div>
       <div class="controls" style="margin-bottom:12px;flex-wrap:wrap">
         <select class="control" id="riskView">
           <option value="broken">Broken sets (1–2 sizes left)</option>
@@ -861,6 +865,7 @@ async function applyImport(){
   if(!pendingImport) return;
   const by=staffName(); if(!by) return;
   const {parsed,goingOOS,existing,carry,fileDate,fileName,unchanged,issues}=pendingImport;
+  const brokenBefore=brokenSummary([...existing.entries()].map(([id,d])=>({id,...d})));
   const counts={ new:parsed.filter(p=>!existing.has(p.base)).length, updated:parsed.filter(p=>existing.has(p.base)).length,
                  outOfStock:goingOOS.length, unchanged, issues:issues.length };
   $('#applyImport').disabled=true; $('#cancelImport').disabled=true;
@@ -899,7 +904,8 @@ async function applyImport(){
     renderAdminSummary(); renderIssuesFromDB();
     await regenerateSnapshot(true, adminProducts);
     toast('Import applied and published');
-    await writeImportLog({ ok:true, by, fileName, fileDate, counts, written:ops.length });
+    let broken=null; try{ broken=brokenTrendEntry(brokenBefore, adminProducts, dayNo(fileDate||Date.now())); }catch(e){ console.warn('Broken-set trend not worked out',e); }
+    await writeImportLog({ ok:true, by, fileName, fileDate, counts, written:ops.length, ...(broken?{broken}:{}) });
   }catch(err){
     console.error('Import failed at', done, '/', ops.length, err);
     writeImportLog({ ok:false, by, fileName, fileDate, counts, written:done, error:String(err.message||err).slice(0,200) });
@@ -1513,6 +1519,7 @@ async function writeImportLog(entry){
   try{ await db.collection(COL).doc(id).set({...rec, ...stamp()}); }catch(e){ console.warn('Import log not saved',e); }
   importLogs=[...importLogs.filter(l=>l.id!==id), {id,...rec}]; saveAdminCache(); renderImportStatus();
   if(!$('#pane-log').classList.contains('hidden')) renderLog();
+  if(!$('#pane-risk').classList.contains('hidden')) renderRisk();
 }
 const dayKey = t => { const d=new Date(t); return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate(); };
 const fmtWhen = t => new Date(t).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'});
@@ -1556,9 +1563,9 @@ const DAY=86400000;
 // "Sparx" + "Sparx SM1117" → "Sparx SM1117"
 function withBrand(p){ const b=tidyCase(p.brand||p.autoBrand||''), n=nameOf(p); return b && !n.toLowerCase().startsWith(b.toLowerCase()) ? b+' '+n : n; }
 let riskShown=40, riskRows=[];
-function riskArticles(){
+function riskArticles(list=adminProducts){
   const start=adminSettings.trackingStart, now=Date.now();
-  return combineSchoolShoes(adminProducts.filter(p=>p.inStock)).map(p=>{
+  return combineSchoolShoes(list.filter(p=>p.inStock)).map(p=>{
     const live=(p.sizes||[]).filter(s=>s.stock>0);
     const pairs=live.reduce((a,s)=>a+s.stock,0);
     const value=live.reduce((a,s)=>a+s.stock*(s.rate||p.priceMin||0),0);
@@ -1571,6 +1578,39 @@ function riskArticles(){
       sincePre: !p.lastSale, agePre: !p.firstSeen };
   }).filter(r=>r.pairs>0);
 }
+/* BROKEN-SET TREND — each import stores the broken-set numbers before and after it, plus the pairs sold
+   that day from articles that were broken, in its import-log record. The At-risk tab charts these. */
+function brokenSummary(list){
+  const rows=riskArticles(list).filter(r=>r.broken);
+  return { ids:new Map(rows.map(r=>[r.p.id, r.p.group_of||[r.p.id]])), sets:rows.length,
+    pairs:rows.reduce((a,r)=>a+r.pairs,0), value:Math.round(rows.reduce((a,r)=>a+r.value,0)) };
+}
+function brokenTrendEntry(before, afterList, day){
+  const after=brokenSummary(afterList), byId=new Map(afterList.map(p=>[p.id,p]));
+  let soldFromBroken=0;
+  before.ids.forEach(ids=>ids.forEach(id=>{ const t=(byId.get(id)?.mv||{})[day]; if(t) Object.values(t).forEach(([so])=>soldFromBroken+=so||0); }));
+  return { before:before.sets, sets:after.sets, pairs:after.pairs, value:after.value, soldFromBroken,
+    newlyBroken:[...after.ids.keys()].filter(id=>!before.ids.has(id)).length,
+    cleared:[...before.ids.keys()].filter(id=>!after.ids.has(id)).length };
+}
+function renderBrokenTrend(){
+  const box=$('#riskTrend'); if(!box) return;
+  // newest import per day
+  const byDay=new Map(); importLogs.filter(l=>l.ok&&l.broken).sort((a,b)=>a.t-b.t).forEach(l=>byDay.set(dayKey(l.fileDate||l.t),l));
+  const days=[...byDay.values()].slice(-14);
+  if(!days.length){ box.innerHTML='<p class="sub" style="margin:0">Daily broken-set tracking starts with the next stock import — from then on you\'ll see each day whether broken sets went down or up, and how many pairs the team sold from them.</p>'; return; }
+  const last=days[days.length-1], wk=days.filter(l=>(l.fileDate||l.t)>=(last.fileDate||last.t)-6*86400000), first=wk[0];
+  const change=last.broken.sets-first.broken.before, sold=wk.reduce((a,l)=>a+l.broken.soldFromBroken,0);
+  const col=change<0?'var(--ok)':change>0?'var(--danger)':'var(--muted)';
+  const arrow=n=>n<0?`<span style="color:var(--ok)">▼ ${-n}</span>`:n>0?`<span style="color:var(--danger)">▲ ${n}</span>`:'<span style="color:var(--muted)">—</span>';
+  box.innerHTML=`<div style="font-size:15px;margin-bottom:10px"><b style="color:${col}">${change<0?'Going down':change>0?'Going up':'No change'}</b> — last 7 days (${wk.length} import${wk.length>1?'s':''}):
+      broken sets ${first.broken.before} → <b>${last.broken.sets}</b> (${change>0?'+':''}${change}) · <b>${sold}</b> pair${sold===1?'':'s'} sold from broken sets${wk.length>1?` (about ${Math.round(sold/wk.length)} per import)`:''}</div>
+    <div class="logtable"><table><thead><tr><th>Day</th><th>Broken sets</th><th>Change</th><th>Pairs sold from broken sets</th><th>Newly broken</th><th>Cleared</th><th>Pairs in broken sets</th></tr></thead><tbody>
+    ${days.slice().reverse().map(l=>{ const b=l.broken; return `<tr><td>${esc(fmtDay(l.fileDate||l.t))}</td><td><b>${b.sets}</b></td><td>${arrow(b.sets-b.before)}</td>
+      <td>${b.soldFromBroken}</td><td>${b.newlyBroken}</td><td>${b.cleared}</td><td>${b.pairs}</td></tr>`; }).join('')}
+    </tbody></table></div>
+    <p class="sub" style="margin:8px 0 0;font-size:12px">Broken sets go down when the team sells their last pairs or new stock refills the missing sizes, and go up when full sets lose sizes. "Pairs sold from broken sets" shows how much the team is pushing them.</p>`;
+}
 function riskFilterOptions(rows){
   const fill=(id,label,vals)=>{ const el=$(id), cur=el.value; el.innerHTML=`<option value="">${label}</option>`+[...new Set(vals.filter(Boolean))].sort().map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join(''); el.value=cur; };
   fill('#riskCat','All types',rows.map(r=>resolveCat(r.p)));
@@ -1578,6 +1618,7 @@ function riskFilterOptions(rows){
   fill('#riskBrand','All brands',rows.map(r=>tidyCase(r.p.brand||r.p.autoBrand||'')));
 }
 function renderRisk(){
+  renderBrokenTrend();
   const all=riskArticles(); riskFilterOptions(all);
   const days=+$('#riskDays').value, view=$('#riskView').value;
   const isSlow=r=>r.noSaleDays!=null && r.noSaleDays>=days;
