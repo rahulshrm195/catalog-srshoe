@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.15.2"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.15.3"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -406,6 +406,7 @@ select.control:focus{border-color:var(--accent)}
           <option value="mapped">Mapped only</option>
           <option value="all">All</option>
           <option value="noimg">Missing photo</option>
+          <option value="nocat">No category (in stock)</option>
         </select>
         <select class="control" id="mSort">
           <option value="stock">Most stock first</option>
@@ -1144,6 +1145,7 @@ function filteredMapProducts(){
   if(status==='unmapped') list=list.filter(p=>!p.mapped);
   else if(status==='mapped') list=list.filter(p=>p.mapped);
   else if(status==='noimg') list=list.filter(p=>!imagesOf(p).length && p.inStock);
+  else if(status==='nocat') list=list.filter(p=>!resolveCat(p) && p.inStock);
   if(q) list=list.filter(p=>((p.displayName||p.rawName||'')+' '+(p.brand||p.autoBrand||'')+' '+p.id).toLowerCase().includes(q));
   const sort=$('#mSort').value;
   list.sort((a,b)=> sort==='name'
@@ -1462,12 +1464,19 @@ function catUsage(){
 function renderCats(){
   const box=$('#catList'); if(!box) return;
   const u=catUsage(), cats=getCategories();
-  box.innerHTML=cats.map(c=>`<div class="mrow">
+  // products whose type couldn't be worked out from the stock file and that nobody has set yet
+  const none=adminProducts.filter(p=>!resolveCat(p)), noneIn=none.filter(p=>p.inStock);
+  box.innerHTML=(none.length?`<div class="mrow" style="border-color:var(--warn)">
+      <div class="minfo"><div class="mname" style="color:var(--warn)">No category</div>
+        <div class="mmeta">${noneIn.length} in stock · ${none.length} total — customers can't find these by type</div></div>
+      ${noneIn.length?'<button class="btn sm primary" id="showNoCat">Show &amp; fix</button>':''}
+    </div>`:'')+cats.map(c=>`<div class="mrow">
       <div class="minfo"><div class="mname">${esc(c)}</div>
         <div class="mmeta">${u[c]?`${u[c].stock} in stock · ${u[c].all} total`:'Not used yet'}</div></div>
       <button class="btn sm" data-ren="${esc(c)}">Rename</button>
       <button class="btn sm ghost" data-del="${esc(c)}">Delete</button>
     </div>`).join('');
+  if($('#showNoCat')) $('#showNoCat').onclick=()=>{ $('.tab[data-tab="map"]').click(); $('#mFilterStatus').value='nocat'; renderMapList(); };
   $$('#catList [data-ren]').forEach(b=>b.onclick=()=>openRenameCat(b.dataset.ren));
   $$('#catList [data-del]').forEach(b=>b.onclick=()=>openDeleteCat(b.dataset.del));
 }
@@ -1612,7 +1621,9 @@ function brokenTrendEntry(before, afterList, day){
 function renderBrokenTrend(){
   const box=$('#riskTrend'); if(!box) return;
   // newest import per day
-  const byDay=new Map(); importLogs.filter(l=>l.ok&&l.broken).sort((a,b)=>a.t-b.t).forEach(l=>byDay.set(dayKey(l.fileDate||l.t),l));
+  const byDay=new Map(); importLogs.filter(l=>l.ok&&l.broken).sort((a,b)=>a.t-b.t).forEach(l=>{ const k=dayKey(l.fileDate||l.t), prev=byDay.get(k);
+    // the day's sold count is cumulative (from the mv log); keep the first import's "before" and add up newly broken / cleared
+    byDay.set(k, prev ? {...l, broken:{...l.broken, before:prev.broken.before, newlyBroken:prev.broken.newlyBroken+l.broken.newlyBroken, cleared:prev.broken.cleared+l.broken.cleared}} : l); });
   const days=[...byDay.values()].slice(-14);
   if(!days.length){ box.innerHTML='<p class="sub" style="margin:0">Daily broken-set tracking starts with the next stock import — from then on you\'ll see each day whether broken sets went down or up, and how many pairs the team sold from them.</p>'; return; }
   const last=days[days.length-1], wk=days.filter(l=>(l.fileDate||l.t)>=(last.fileDate||last.t)-6*86400000), first=wk[0];
