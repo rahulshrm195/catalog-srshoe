@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.15.0"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.15.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -648,24 +648,40 @@ function autoCategory(group,sub){
 }
 
 /* ---------- Read the xlsx into products keyed by base code ---------- */
-// The export carries its date in the title rows (e.g. "15 Oct 2026").
+// The stock export is Simple Billing's "Inventory List". Find it on any sheet, with the header row
+// ("Code, Group, Sub-Group, Name, Desc, Stock, Rate") anywhere in the first 30 rows, any letter case.
+const normHead = c => String(c??'').trim().toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const HEAD_ALIASES={ code:['code','item code','product code','code no'], group:['group','item group'], sub:['sub group','subgroup'],
+  name:['name','item name','product name'], desc:['desc','description','size'], stock:['stock','closing stock','qty','quantity','balance'], rate:['rate','sale rate','mrp'] };
+function findStockSheet(wb){
+  for(const sn of wb.SheetNames){
+    const rows=XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,raw:true,defval:''});
+    for(let i=0;i<Math.min(rows.length,30);i++){ const head=rows[i].map(normHead);
+      if(HEAD_ALIASES.code.some(a=>head.includes(a)) && HEAD_ALIASES.stock.some(a=>head.includes(a))) return {sn, rows, h:i, head}; }
+  }
+  // Not an inventory list: say what the file does contain, so staff can tell which report they picked.
+  const sn=wb.SheetNames[0], rows=sn?XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,raw:true,defval:''}):[];
+  const seen=rows.slice(0,12).map(r=>r.map(c=>String(c instanceof Date?c.toLocaleDateString('en-IN'):c).trim()).filter(Boolean).join(' | ')).filter(Boolean).slice(0,4);
+  throw new Error(`This isn't the stock file. Export "Inventory List" (Item Category: ALL) from Simple Billing and choose that file. `
+    +`This file ${seen.length?`starts with: "${seen.join('" / "').slice(0,240)}"`:'looks empty'}${wb.SheetNames.length>1?` (sheets: ${wb.SheetNames.join(', ')})`:''}.`);
+}
+// The export carries its date in the title rows (a date cell, or text like "22/10/2026" or "22 Oct 2026").
 function fileDateOf(wb){
-  const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''}).slice(0,6);
-  for(const r of rows) for(const c of r) if(c instanceof Date && !isNaN(c)) return c.getTime();
+  let rows; try{ const f=findStockSheet(wb); rows=f.rows.slice(0,f.h); }catch(e){ return null; }
+  for(const r of rows) for(const c of r){
+    if(c instanceof Date && !isNaN(c)) return c.getTime();
+    const m=String(c).match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/); if(m){ const d=new Date(+m[3],+m[2]-1,+m[1]); if(!isNaN(d)) return d.getTime(); }
+    const t=Date.parse(String(c)); if(/\d{4}/.test(String(c)) && /[a-z]{3}/i.test(String(c)) && !isNaN(t)) return t;
+  }
   return null;
 }
 function parseWorkbook(wb){
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:''});
-  // find header row containing "Code"
-  let h=-1;
-  for(let i=0;i<Math.min(rows.length,15);i++){ if(rows[i].some(c=>String(c).trim()==='Code')){ h=i; break; } }
-  if(h<0) throw new Error('Could not find the header row (expected a "Code" column).');
-  const head = rows[h].map(c=>String(c).trim());
-  const col = name => head.indexOf(name);
-  const cCode=col('Code'), cGroup=col('Group'), cSub=col('Sub-Group'), cName=col('Name'),
-        cDesc=col('Desc'), cStock=col('Stock'), cRate=col('Rate');
-  if(cCode<0) throw new Error('No "Code" column found.');
+  const {rows,h,head}=findStockSheet(wb);
+  const col = key => { for(const a of HEAD_ALIASES[key]){ const i=head.indexOf(a); if(i>=0) return i; } return -1; };
+  const cCode=col('code'), cGroup=col('group'), cSub=col('sub'), cName=col('name'),
+        cDesc=col('desc'), cStock=col('stock'), cRate=col('rate');
+  const missing=[['Name',cName],['Desc',cDesc],['Rate',cRate]].filter(([,i])=>i<0).map(([n])=>n);
+  if(missing.length) throw new Error(`The stock file is missing the ${missing.join(', ')} column${missing.length>1?'s':''}. Export "Inventory List" from Simple Billing with all columns.`);
 
   const map = new Map();
   for(let i=h+1;i<rows.length;i++){
