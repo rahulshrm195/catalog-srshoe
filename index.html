@@ -14,7 +14,7 @@
      CONFIG — edit these three blocks, then deploy.
      ============================================================ -->
 <script>
-const APP_VERSION = "1.15.1"; // bump this on every reupload — shown in Admin so you can confirm the live file
+const APP_VERSION = "1.15.2"; // bump this on every reupload — shown in Admin so you can confirm the live file
 
 const CONFIG = {
   // 1) Paste your Firebase project config here (Project settings → Your apps → Web app).
@@ -787,7 +787,7 @@ async function handleFile(f){
     const changed=parsed.filter(p=>{
       if(!p.base) return false;
       const ex=existing.get(p.base);
-      if(!ex){ nNew++; return true; }
+      if(!ex){ if(!p.totalStock) return false; nNew++; return true; } // a never-seen item with no stock (exports can list zero-stock items) isn't added
       const diff=fileDiffers(p,ex); if(diff) nUpd++; return diff;
     });
     // Before v1.7 kids sizes were split off (N6246X9K was its own product). Move their photos and
